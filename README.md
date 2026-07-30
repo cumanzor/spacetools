@@ -24,13 +24,19 @@ each named space, plus a name strip under the Mission Control spaces bar.
 
 ## How it works
 
-Window moves and space switches go through the private SkyLight bridge classes
-(`SLSBridgedMoveWindowsToManagedSpaceOperation`,
-`SLSBridgedManagedDisplaySetCurrentSpaceOperation`) via
-`SLSWindowManagementFallbackBridge`. This is the same mechanism yabai adopted
-in 2026 for SIP-enabled space operations. The legacy CGS calls
+Window moves go through the private SkyLight bridge class
+`SLSBridgedMoveWindowsToManagedSpaceOperation` via
+`SLSWindowManagementFallbackBridge`. The legacy CGS calls
 (`CGSAddWindowsToSpaces` etc.) are dead for foreign windows on macOS 26; they
 only work on windows you own.
+
+Space switches do **not** go through the bridge. `sw` synthesises the Dock's own
+swipe control event (a `CGEvent` with field 110 set to subtype 23, posted to
+`kCGSessionEventTap` once per space of travel) so that the Dock performs the
+switch. This is yabai's `space_manager_focus_space_using_gesture`, the fallback
+it uses when the scripting addition is unavailable. The velocity field is set
+absurdly high (9999) which skips the slide animation, so a multi-space jump is
+still fast.
 
 Gotchas learned the hard way:
 
@@ -43,6 +49,22 @@ Gotchas learned the hard way:
   Control. The strip is pre-created at alpha 0 and toggled by alpha only.
 - Mission Control detection: Dock gains onscreen windows at layer 18 while MC
   is up. Polled at 300ms.
+- Do not switch spaces with `SLSBridgedManagedDisplaySetCurrentSpaceOperation`.
+  It moves the window server and nothing else. The Dock keeps its own
+  current-space index and no op in the bridge tells it otherwise (all 100
+  `SLSBridged*` classes were dumped looking for one). The two then disagree:
+  `spacename` reports the new space while Mission Control still highlights the
+  old one, draws ghost previews instead of live thumbnails, and ctrl-arrow steps
+  from the wrong desktop. Adding the rest of the window-server handshake
+  (`WillSwitchSpaces` / `ShowSpaces` / `HideSpaces` / `SpaceResetMenuBar`) fixes
+  the compositing but not the Dock. Let the Dock do the switch instead. An
+  earlier changelog blamed this on "switching while MC is open"; that was wrong,
+  the desync happens on every bridged switch and MC just makes it visible.
+- `NSWindow.frame` lies after a display change. The window server relocates your
+  windows and AppKit keeps reporting the old rect, so `setFrame:` to the rect
+  AppKit already believes it has is a no-op and the window never comes back.
+  Decide position against `CGWindowListCopyWindowInfo`, and set an offset rect
+  first to force the move through.
 - `CGSSpaceSetName` exists but writes the space UUID field. Do not use it.
 
 ## Build
@@ -50,6 +72,11 @@ Gotchas learned the hard way:
 ```sh
 make install   # builds, bundles to ~/Applications, shims to ~/.local/bin
 ```
+
+Copy `codesign.env.example` to `codesign.env` (gitignored) to sign with a real
+identity, otherwise it falls back to adhoc. Nothing here needs a TCC permission
+today, so adhoc is fine; the stable path exists so that a future feature that
+does need one won't have its grant reset by every rebuild.
 
 Binaries must live inside an .app bundle; the WindowManagement XPC service
 rejects bare executables. `~/.local/bin/{spacename,sw,bring}` are shims into

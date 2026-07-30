@@ -62,34 +62,90 @@ static NSDictionary *matchSpace(NSString *query) {
     return nil;
 }
 
-static void bridgedOp(NSString *clsName, id op) {
+// every op in one transaction: a space switch split across several transactions
+// lets the window server apply half a switch
+static void bridgedOps(NSArray *ops) {
     Class brCls = NSClassFromString(@"SLSWindowManagementFallbackBridge");
+    if (!brCls || !ops.count) return;
     id bridge = [[brCls alloc] init];
     void (^blk)(void) = ^{
-        ((void(*)(id,SEL,id))objc_msgSend)(bridge,
-            sel_registerName("performAsynchronousBridgedWindowManagementOperation:"), op);
+        for (id op in ops)
+            ((void(*)(id,SEL,id))objc_msgSend)(bridge,
+                sel_registerName("performAsynchronousBridgedWindowManagementOperation:"), op);
     };
     ((void(*)(id,SEL,id))objc_msgSend)(bridge,
         sel_registerName("performWindowManagementBridgeTransactionUsingBlock:"), blk);
-    (void)clsName;
 }
+static void bridgedOp(id op) { bridgedOps(op ? @[op] : @[]); }
+
+static NSDictionary *currentSpaceOnDisplay(NSString *ident) {
+    for (NSDictionary *s in spaceInfos())
+        if ([s[@"current"] boolValue] && [s[@"display"] isEqualToString:ident]) return s;
+    return nil;
+}
+static CGDirectDisplayID displayIDForIdent(NSString *ident) {
+    if (!ident.length || [ident isEqualToString:@"Main"]) return CGMainDisplayID();
+    CGDirectDisplayID ids[16]; uint32_t n = 0;
+    CGGetActiveDisplayList(16, ids, &n);
+    for (uint32_t i = 0; i < n; i++) {
+        CFUUIDRef u = CGDisplayCreateUUIDFromDisplayID(ids[i]);
+        if (!u) continue;
+        NSString *str = CFBridgingRelease(CFUUIDCreateString(NULL, u));
+        CFRelease(u);
+        if ([str isEqualToString:ident]) return ids[i];
+    }
+    return CGMainDisplayID();
+}
+
+// Setting the current space through SkyLight only moves the window server. The
+// Dock keeps its own index and nothing in the bridge tells it otherwise, so
+// Mission Control keeps drawing the space you left and ctrl-arrow counts from
+// the wrong desktop. Driving the Dock's own swipe gesture makes the Dock
+// perform the switch, so its model stays in step. Field numbers and the 9999
+// velocity (which skips the slide animation) are yabai's, from
+// src/space_manager.c space_manager_focus_space_using_gesture.
 static int switchToSpace(NSDictionary *s) {
-    Class opCls = NSClassFromString(@"SLSBridgedManagedDisplaySetCurrentSpaceOperation");
-    if (!opCls) { fprintf(stderr, "spacetool: SkyLight bridge unavailable\n"); return 1; }
-    id (*initFn)(id, SEL, id, uint64_t) = (id(*)(id,SEL,id,uint64_t))objc_msgSend;
-    id op = initFn(((id(*)(id,SEL))objc_msgSend)(opCls, sel_registerName("alloc")),
-                   sel_registerName("initWithDisplayIdentifier:spaceID:"),
-                   s[@"display"], [s[@"sid"] unsignedLongLongValue]);
-    bridgedOp(nil, op);
-    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.6]];
-    return 0;
+    NSString *ident = s[@"display"];
+    NSDictionary *cur = currentSpaceOnDisplay(ident);
+    if (!cur) { fprintf(stderr, "sw: no current space on display %s\n", ident.UTF8String); return 1; }
+    int delta = [s[@"ord"] intValue] - [cur[@"ord"] intValue];
+    if (delta == 0) return 0;
+
+    CGRect b = CGDisplayBounds(displayIDForIdent(ident));
+    if (![ident isEqualToString:currentSpaceInfo()[@"display"]])
+        CGWarpMouseCursorPosition(CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b)));
+
+    CGEventRef e = CGEventCreate(NULL);
+    if (!e) { fprintf(stderr, "sw: CGEventCreate failed\n"); return 1; }
+    double sign = delta > 0 ? 1.0 : -1.0;
+    CGEventSetIntegerValueField(e, 55, 30);      // gesture event
+    CGEventSetIntegerValueField(e, 110, 23);     // subtype: dock control
+    CGEventSetIntegerValueField(e, 123, 1);
+    CGEventSetDoubleValueField(e, 124, sign);
+    CGEventSetDoubleValueField(e, 129, sign * 9999.0);
+    for (int i = 0, n = abs(delta); i < n; i++) {
+        CGEventSetIntegerValueField(e, 132, 1);  // phase: began
+        CGEventPost(kCGSessionEventTap, e);
+        CGEventSetIntegerValueField(e, 132, 4);  // phase: ended
+        CGEventPost(kCGSessionEventTap, e);
+    }
+    CFRelease(e);
+
+    for (int i = 0; i < 40; i++) {               // settle, then confirm it took
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+        if ([currentSpaceOnDisplay(ident)[@"sid"] isEqual:s[@"sid"]]) return 0;
+    }
+    fprintf(stderr, "sw: the Dock ignored the gesture. Grant Accessibility to\n"
+                    "    ~/Applications/SpaceTool.app in System Settings >\n"
+                    "    Privacy & Security > Accessibility, then try again.\n");
+    return 1;
 }
 static void moveWindowsToSpace(NSArray *wids, uint64_t sid) {
     Class opCls = NSClassFromString(@"SLSBridgedMoveWindowsToManagedSpaceOperation");
     id (*initFn)(id, SEL, id, uint64_t) = (id(*)(id,SEL,id,uint64_t))objc_msgSend;
     id op = initFn(((id(*)(id,SEL))objc_msgSend)(opCls, sel_registerName("alloc")),
                    sel_registerName("initWithWindows:spaceID:"), wids, sid);
-    bridgedOp(nil, op);
+    bridgedOp(op);
 }
 
 static NSString *label(NSDictionary *s) {

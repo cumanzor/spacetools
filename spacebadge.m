@@ -7,17 +7,20 @@ typedef int (*ConnFn)(void);
 typedef CFArrayRef (*MDSFn)(int);
 typedef void (*AddFn)(int, CFArrayRef, CFArrayRef);
 typedef void (*RemFn)(int, CFArrayRef, CFArrayRef);
+typedef CFArrayRef (*CopySpacesFn)(int, int, CFArrayRef);
 
 static int cid;
 static MDSFn mdsF;
 static AddFn addF;
 static RemFn remF;
+static CopySpacesFn copySpacesF;
 
 @interface Badger : NSObject
 @property NSMutableDictionary<NSString*, NSWindow*> *badges;   // uuid -> window
 @property NSWindow *strip;
 @property NSDate *mapMtime;
 @property BOOL mcVisible;
+@property NSTimer *settle;
 @end
 
 static NSString *mapPath(void) {
@@ -36,8 +39,43 @@ static NSArray *spaceList(void) {
         for (NSDictionary *s in d[@"Spaces"]) {
             ord++;
             [out addObject:@{ @"sid": s[@"ManagedSpaceID"], @"uuid": s[@"uuid"] ?: @"",
-                              @"ord": @(ord), @"type": s[@"type"] ?: @0 }];
+                              @"ord": @(ord), @"type": s[@"type"] ?: @0,
+                              @"display": d[@"Display Identifier"] ?: @"Main" }];
         }
+    }
+    return out;
+}
+
+// screens[0] is the menu bar display, which is what CGS calls "Main"
+static NSScreen *screenForDisplay(NSString *ident) {
+    NSScreen *fallback = [NSScreen screens].firstObject ?: [NSScreen mainScreen];
+    if (!ident.length || [ident isEqualToString:@"Main"]) return fallback;
+    for (NSScreen *s in [NSScreen screens]) {
+        CGDirectDisplayID did = [s.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
+        CFUUIDRef u = CGDisplayCreateUUIDFromDisplayID(did);
+        if (!u) continue;
+        NSString *str = CFBridgingRelease(CFUUIDCreateString(NULL, u));
+        CFRelease(u);
+        if ([str isEqualToString:ident]) return s;
+    }
+    return fallback;   // space belongs to a display that is no longer attached
+}
+
+// A display change moves our windows behind AppKit's back: the window server
+// relocates them but NSWindow.frame keeps reporting the old rect, so -setFrame:
+// to that same rect short circuits and the window never comes back. Everything
+// positional has to be decided against these numbers, not against .frame.
+static NSDictionary<NSNumber *, NSValue *> *serverFrames(void) {
+    CGFloat h = ([NSScreen screens].firstObject ?: [NSScreen mainScreen]).frame.size.height;
+    int me = getpid();
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    for (NSDictionary *w in (NSArray *)CFBridgingRelease(CGWindowListCopyWindowInfo(
+            kCGWindowListOptionAll, kCGNullWindowID))) {
+        if ([w[(id)kCGWindowOwnerPID] intValue] != me) continue;
+        CGRect b;
+        if (!CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)w[(id)kCGWindowBounds], &b)) continue;
+        out[w[(id)kCGWindowNumber]] = [NSValue valueWithRect:
+            NSMakeRect(b.origin.x, h - b.origin.y - b.size.height, b.size.width, b.size.height)];
     }
     return out;
 }
@@ -55,13 +93,18 @@ static NSAttributedString *badgeText(NSString *name, CGFloat size) {
 }
 
 
-static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
-    Class opCls = NSClassFromString(@"SLSBridgedMoveWindowsToManagedSpaceOperation");
+static BOOL mcOpen(void) {
+    NSArray *list = CFBridgingRelease(CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly, kCGNullWindowID));
+    for (NSDictionary *w in list)
+        if ([w[(id)kCGWindowOwnerName] isEqual:@"Dock"] && [w[(id)kCGWindowLayer] intValue] == 18)
+            return YES;
+    return NO;
+}
+
+static void bridgedOp(id op) {
     Class brCls = NSClassFromString(@"SLSWindowManagementFallbackBridge");
-    if (!opCls || !brCls) return;
-    id (*initFn)(id, SEL, id, uint64_t) = (id(*)(id,SEL,id,uint64_t))objc_msgSend;
-    id op = initFn(((id(*)(id,SEL))objc_msgSend)(opCls, sel_registerName("alloc")),
-                   sel_registerName("initWithWindows:spaceID:"), @[@(wid)], sid);
+    if (!op || !brCls) return;
     id bridge = [[brCls alloc] init];
     void (^blk)(void) = ^{
         ((void(*)(id,SEL,id))objc_msgSend)(bridge,
@@ -70,6 +113,15 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
     ((void(*)(id,SEL,id))objc_msgSend)(bridge,
         sel_registerName("performWindowManagementBridgeTransactionUsingBlock:"), blk);
 }
+
+static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
+    Class opCls = NSClassFromString(@"SLSBridgedMoveWindowsToManagedSpaceOperation");
+    if (!opCls) return;
+    id (*initFn)(id, SEL, id, uint64_t) = (id(*)(id,SEL,id,uint64_t))objc_msgSend;
+    bridgedOp(initFn(((id(*)(id,SEL))objc_msgSend)(opCls, sel_registerName("alloc")),
+                     sel_registerName("initWithWindows:spaceID:"), @[@(wid)], sid));
+}
+
 
 @implementation Badger
 - (instancetype)init {
@@ -88,10 +140,27 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
     return w;
 }
 
+- (void)place:(NSWindow *)w at:(NSRect)frame server:(NSDictionary *)server {
+    NSValue *v = server[@(w.windowNumber)];
+    if (v && NSEqualRects(v.rectValue, frame)) return;
+    [w setFrame:NSOffsetRect(frame, 1, 0) display:NO];   // defeat the no-op short circuit
+    [w setFrame:frame display:YES];
+}
+
+// a display change can also drop a badge off its space, which reads as the
+// badge simply never showing up again
+- (void)ensureSpace:(NSWindow *)w sid:(uint64_t)sid {
+    if (!copySpacesF) return;
+    NSNumber *wid = @(w.windowNumber);
+    NSArray *on = CFBridgingRelease(copySpacesF(cid, 7, (__bridge CFArrayRef)@[wid]));
+    if (on.count == 1 && [on.firstObject unsignedLongLongValue] == sid) return;
+    bridgedMoveWindow(wid.unsignedIntValue, sid);
+}
+
 - (void)sync {
     NSDictionary *map = loadMap();
     NSArray *spaces = spaceList();
-    NSRect vis = [NSScreen mainScreen].visibleFrame;
+    NSDictionary *server = serverFrames();
     NSMutableSet *live = [NSMutableSet set];
     for (NSDictionary *s in spaces) {
         if ([s[@"type"] intValue] != 0) continue;          // skip fullscreen spaces
@@ -100,9 +169,10 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
         if (!name.length) continue;
         [live addObject:uuid];
         NSWindow *w = self.badges[uuid];
+        NSRect vis = screenForDisplay(s[@"display"]).visibleFrame;
         NSAttributedString *t = badgeText(name, 54);
         NSSize sz = t.size;
-        NSRect frame = NSMakeRect(NSMaxX(vis) - sz.width - 36,
+        NSRect frame = NSMakeRect(MAX(NSMinX(vis) + 8, NSMaxX(vis) - sz.width - 36),
                                   NSMaxY(vis) - sz.height - 18, sz.width + 8, sz.height + 4);
         if (!w) {
             w = [self makeOverlay:frame];
@@ -119,10 +189,9 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
             self.badges[uuid] = w;
         } else {
             NSTextField *l = w.contentView.subviews.firstObject;
-            if (![l.attributedStringValue.string isEqualToString:name]) {
-                l.attributedStringValue = t;
-                [w setFrame:frame display:YES];
-            }
+            if (![l.attributedStringValue.string isEqualToString:name]) l.attributedStringValue = t;
+            [self place:w at:frame server:server];
+            [self ensureSpace:w sid:[s[@"sid"] unsignedLongLongValue]];
         }
     }
     for (NSString *uuid in self.badges.allKeys) {
@@ -133,14 +202,7 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
     }
 }
 
-- (BOOL)missionControlOpen {
-    NSArray *list = CFBridgingRelease(CGWindowListCopyWindowInfo(
-        kCGWindowListOptionOnScreenOnly, kCGNullWindowID));
-    for (NSDictionary *w in list)
-        if ([w[(id)kCGWindowOwnerName] isEqual:@"Dock"] && [w[(id)kCGWindowLayer] intValue] == 18)
-            return YES;
-    return NO;
-}
+- (BOOL)missionControlOpen { return mcOpen(); }
 
 - (void)showStrip {
     NSDictionary *map = loadMap();
@@ -156,8 +218,10 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
         NSFontAttributeName: [NSFont systemFontOfSize:22 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: [NSColor whiteColor] }];
     NSSize sz = t.size;
-    NSRect scr = [NSScreen mainScreen].frame;
-    NSRect frame = NSMakeRect(NSMidX(scr) - sz.width/2 - 22,
+    // screens[0] is the menu bar display; mainScreen is key-window relative and
+    // this process never has a key window
+    NSRect scr = ([NSScreen screens].firstObject ?: [NSScreen mainScreen]).frame;
+    NSRect frame = NSMakeRect(MAX(NSMinX(scr) + 8, NSMidX(scr) - sz.width/2 - 22),
                               NSMaxY(scr) - 158 - sz.height, sz.width + 44, sz.height + 20);
     if (!self.strip) {
         self.strip = [self makeOverlay:frame];
@@ -174,8 +238,20 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
         [self.strip orderFrontRegardless];   // pre-shown: ordering during MC dismisses it
     }
     ((NSTextField *)self.strip.contentView.subviews.firstObject).attributedStringValue = t;
-    [self.strip setFrame:frame display:YES];
+    [self place:self.strip at:frame server:serverFrames()];
     self.strip.alphaValue = 1;
+}
+
+// a dock/undock fires this repeatedly and visibleFrame keeps moving for a beat
+// after the last one, so debounce and then sync again once it has settled
+- (void)screensChanged {
+    [self.settle invalidate];
+    __weak typeof(self) ws = self;
+    self.settle = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:NO block:^(NSTimer *t) {
+        [ws sync];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{ [ws sync]; });
+    }];
 }
 
 - (void)tick {
@@ -208,12 +284,16 @@ int main() {
     mdsF = (MDSFn)dlsym(h, "CGSCopyManagedDisplaySpaces");
     addF = (AddFn)dlsym(h, "CGSAddWindowsToSpaces");
     remF = (RemFn)dlsym(h, "CGSRemoveWindowsFromSpaces");
+    copySpacesF = (CopySpacesFn)dlsym(h, "CGSCopySpacesForWindows");
 
     Badger *b = [Badger new];
     [b sync];
     [[[NSWorkspace sharedWorkspace] notificationCenter]
         addObserverForName:NSWorkspaceActiveSpaceDidChangeNotification
         object:nil queue:nil usingBlock:^(NSNotification *n) { [b sync]; }];
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSApplicationDidChangeScreenParametersNotification
+        object:nil queue:nil usingBlock:^(NSNotification *n) { [b screensChanged]; }];
     [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) { [b tick]; }];
     [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *t) { [b maybeResync]; }];
     [NSTimer scheduledTimerWithTimeInterval:15.0 repeats:YES block:^(NSTimer *t) { [b sync]; }];

@@ -1,7 +1,8 @@
 # spacetools
 
-Name macOS Spaces, switch to them by name, and pull an app's windows to the
-current Space. No SIP changes needed. Verified on macOS 26.5.
+Name macOS Spaces, switch to them by name or by pressing a digit in Mission
+Control, and pull an app's windows to the current Space. No SIP changes needed.
+Verified on macOS 26.5.
 
 ## Commands
 
@@ -16,6 +17,11 @@ bring messages       # move an app's windows to this space and focus it
 Names live in `~/.config/spacenames.json`, keyed by space UUID (stable across
 reboots, unlike ManagedSpaceIDs).
 
+`sw` matches in this order: exact name, name prefix, name substring, then
+ordinal. It verifies the switch actually landed before returning, so it exits
+non-zero if the Dock ignored it (see Setup). All commands exit 0 on success, 1
+on a miss, and 2 on bad usage.
+
 ## SpaceBadge daemon
 
 `~/Applications/SpaceBadge.app`, kept alive by the LaunchAgent
@@ -26,6 +32,12 @@ It also takes `1`-`9` while Mission Control is open and switches to that space.
 The key tap is created disabled and only armed between the MC-open and MC-close
 edges, so it is inert the rest of the time. This needs Accessibility; without it
 `CGEventTapCreate` returns NULL and only this feature is lost.
+
+Cadence: Mission Control state is polled every 300ms, the name file is checked
+for changes every 2s, and a full resync runs every 15s. A resync also runs on
+`NSWorkspaceActiveSpaceDidChangeNotification`, and 1s and 3.5s after
+`NSApplicationDidChangeScreenParametersNotification` (a dock or undock fires it
+repeatedly and `visibleFrame` keeps moving for a beat after the last one).
 
 ## How it works
 
@@ -76,20 +88,67 @@ Gotchas learned the hard way:
   first to force the move through.
 - `CGSSpaceSetName` exists but writes the space UUID field. Do not use it.
 
-## Build
+## Setup
 
 ```sh
 make install   # builds, bundles to ~/Applications, shims to ~/.local/bin
 ```
 
-Copy `codesign.env.example` to `codesign.env` (gitignored) to sign with a real
-identity, otherwise it falls back to adhoc. Nothing here needs a TCC permission
-today, so adhoc is fine; the stable path exists so that a future feature that
-does need one won't have its grant reset by every rebuild.
+**Codesigning matters here.** Copy `codesign.env.example` to `codesign.env`
+(gitignored) to sign with a real identity. Adhoc signing works, but SpaceBadge
+needs an Accessibility grant for the Mission Control digit switching, and an
+adhoc signature changes on every build, so macOS drops the grant each time you
+rebuild. The designated requirement is pinned to the team OU, which is what
+keeps the grant across rebuilds and cert renewals.
+
+**Accessibility.** SpaceBadge prompts on first launch. Grant it under System
+Settings > Privacy & Security > Accessibility. Only the digit switching depends
+on it. Badges, the strip, and `spacename` / `bring` all work without it.
+
+`sw` posts CGEvents too, so it needs the grant as well, but TCC attributes those
+to whatever launched it (Raycast, your terminal) rather than to SpaceTool, and
+those apps usually already have it.
+If it ever prints `the Dock ignored the gesture`, grant Accessibility to the
+calling app, or to `~/Applications/SpaceTool.app` if you are running the binary
+directly.
+
+**LaunchAgent.** `make install` does *not* write the plist. Create
+`~/Library/LaunchAgents/dev.umanzor.spacebadge.plist` once:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.umanzor.spacebadge</string>
+  <key>ProgramArguments</key><array>
+    <string>/Users/carlos/Applications/SpaceBadge.app/Contents/MacOS/SpaceBadge</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict></plist>
+```
+
+then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.umanzor.spacebadge.plist`.
+After any later `make install`, restart it with bootout then bootstrap, not
+`kickstart -k`: launchd caches the old cdhash and kickstart dies with
+`OS_REASON_CODESIGNING`.
+
+**Raycast.** Scripts live in `~/Documents/scripts/Raycast`
+(`sw.sh`, `bring.sh`, `name-space.sh`, `list-spaces.sh`). The directory has to be
+added once under Raycast's Script Commands settings.
 
 Binaries must live inside an .app bundle; the WindowManagement XPC service
 rejects bare executables. `~/.local/bin/{spacename,sw,bring}` are shims into
 SpaceTool.app.
 
-Raycast scripts live in `~/Documents/scripts/Raycast` (already registered as a
-Script Commands directory).
+## Uninstall
+
+```sh
+launchctl bootout gui/$(id -u)/dev.umanzor.spacebadge
+rm -f ~/Library/LaunchAgents/dev.umanzor.spacebadge.plist
+rm -rf ~/Applications/SpaceTool.app ~/Applications/SpaceBadge.app
+rm -f ~/.local/bin/spacename ~/.local/bin/sw ~/.local/bin/bring
+```
+
+`~/.config/spacenames.json` is left alone; delete it too if you want the names
+gone. Remove the SpaceBadge entry from the Accessibility list by hand.

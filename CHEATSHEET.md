@@ -28,11 +28,16 @@ bring spark            # move app windows here + focus (fuzzy app match)
   (`·` = unnamed, order matches thumbnails left to right).
 - Rename or clear a name and the badge updates within ~2s.
 
-There is no switch-by-number from inside Mission Control. It was built and then
-pulled. The reason recorded at the time (switching while MC is open corrupts
-WindowServer) turned out to be wrong: the real problem was that a bridged switch
-desyncs the Dock whether MC is open or not. `sw` no longer switches that way, so
-the feature is worth revisiting. Use `sw <name>` or `sw <n>` meanwhile.
+Open Mission Control and press `1`-`9` to jump to that space. MC closes and you
+land there. Digits past the last space do nothing and stay in Mission Control.
+Needs Accessibility for SpaceBadge (System Settings > Privacy & Security >
+Accessibility); without it the rest of the daemon still works and only this is
+off.
+
+This was built and pulled once before. The reason recorded at the time
+(switching while MC is open corrupts WindowServer) was wrong: the real problem
+was a bridged switch desyncing the Dock, MC open or not. `sw` no longer switches
+that way, so it works now.
 
 ## Daemon control
 

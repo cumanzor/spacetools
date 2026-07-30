@@ -102,6 +102,61 @@ static BOOL mcOpen(void) {
     return NO;
 }
 
+static CFMachPortRef keyTap;
+static BOOL mcArmed;
+static int maxOrd;
+
+static void postEscape(void) {
+    CGEventRef d = CGEventCreateKeyboardEvent(NULL, 53, true);
+    CGEventRef u = CGEventCreateKeyboardEvent(NULL, 53, false);
+    if (d) { CGEventPost(kCGSessionEventTap, d); CFRelease(d); }
+    if (u) { CGEventPost(kCGSessionEventTap, u); CFRelease(u); }
+}
+
+static int digitForKeycode(int64_t kc) {
+    static const int codes[9] = { 18, 19, 20, 21, 23, 22, 26, 28, 25 };   // 1..9
+    for (int i = 0; i < 9; i++) if (codes[i] == kc) return i + 1;
+    return 0;
+}
+
+// Mission Control swallows the Dock swipe gesture that `sw` switches with, so
+// it has to be gone before the switch, not merely on its way out.
+static void switchToOrd(int ord) {
+    postEscape();
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        for (int i = 0; i < 40 && mcOpen(); i++) usleep(50000);
+        NSTask *t = [NSTask new];
+        t.executableURL = [NSURL fileURLWithPath:[NSHomeDirectory()
+            stringByAppendingPathComponent:@"Applications/SpaceTool.app/Contents/MacOS/SpaceTool"]];
+        t.arguments = @[@"switch", [NSString stringWithFormat:@"%d", ord]];
+        [t launchAndReturnError:nil];
+    });
+}
+
+static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef e, void *ctx) {
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        if (keyTap) CGEventTapEnable(keyTap, true);
+        return e;
+    }
+    if (!mcArmed || type != kCGEventKeyDown) return e;
+    if (CGEventGetFlags(e) & (kCGEventFlagMaskCommand | kCGEventFlagMaskControl |
+                              kCGEventFlagMaskAlternate | kCGEventFlagMaskShift)) return e;
+    int d = digitForKeycode(CGEventGetIntegerValueField(e, kCGKeyboardEventKeycode));
+    if (!d || d > maxOrd) return e;
+    switchToOrd(d);
+    return NULL;   // swallow it so the digit does not leak to whatever is behind
+}
+
+static void installTap(void) {
+    keyTap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap,
+        kCGEventTapOptionDefault, CGEventMaskBit(kCGEventKeyDown), tapCallback, NULL);
+    if (!keyTap) return;
+    CFRunLoopSourceRef src = CFMachPortCreateRunLoopSource(NULL, keyTap, 0);
+    CFRunLoopAddSource(CFRunLoopGetMain(), src, kCFRunLoopCommonModes);
+    CFRelease(src);
+    CGEventTapEnable(keyTap, false);   // only armed while Mission Control is up
+}
+
 static void bridgedOp(id op) {
     Class brCls = NSClassFromString(@"SLSWindowManagementFallbackBridge");
     if (!op || !brCls) return;
@@ -213,6 +268,7 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
         [parts addObject:[NSString stringWithFormat:@"%d %@", [s[@"ord"] intValue],
                           name.length ? name : @"·"]];
     }
+    maxOrd = (int)parts.count;
     NSString *text = [parts componentsJoinedByString:@"    "];
     NSAttributedString *t = [[NSAttributedString alloc] initWithString:text attributes:@{
         NSFontAttributeName: [NSFont systemFontOfSize:22 weight:NSFontWeightSemibold],
@@ -259,10 +315,14 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
     if (mc && !self.mcVisible) {
         [self showStrip];
         for (NSWindow *b in self.badges.allValues) b.alphaValue = 0;
+        mcArmed = YES;
+        if (keyTap) CGEventTapEnable(keyTap, true);
     }
     if (!mc && self.mcVisible) {
         self.strip.alphaValue = 0;
         for (NSWindow *b in self.badges.allValues) b.alphaValue = 1;
+        mcArmed = NO;
+        if (keyTap) CGEventTapEnable(keyTap, false);
     }
     self.mcVisible = mc;
 }
@@ -285,6 +345,12 @@ int main() {
     addF = (AddFn)dlsym(h, "CGSAddWindowsToSpaces");
     remF = (RemFn)dlsym(h, "CGSRemoveWindowsFromSpaces");
     copySpacesF = (CopySpacesFn)dlsym(h, "CGSCopySpacesForWindows");
+
+    if (!AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)
+            @{ (__bridge id)kAXTrustedCheckOptionPrompt: @YES }))
+        fprintf(stderr, "spacebadge: no Accessibility grant, "
+                        "1-9 switching inside Mission Control is off\n");
+    installTap();
 
     Badger *b = [Badger new];
     [b sync];

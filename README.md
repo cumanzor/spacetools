@@ -22,6 +22,11 @@ reboots, unlike ManagedSpaceIDs).
 `dev.umanzor.spacebadge`. Shows a translucent name badge in the top-right of
 each named space, plus a name strip under the Mission Control spaces bar.
 
+It also takes `1`-`9` while Mission Control is open and switches to that space.
+The key tap is created disabled and only armed between the MC-open and MC-close
+edges, so it is inert the rest of the time. This needs Accessibility; without it
+`CGEventTapCreate` returns NULL and only this feature is lost.
+
 ## How it works
 
 Window moves go through the private SkyLight bridge class
@@ -60,6 +65,10 @@ Gotchas learned the hard way:
   the compositing but not the Dock. Let the Dock do the switch instead. An
   earlier changelog blamed this on "switching while MC is open"; that was wrong,
   the desync happens on every bridged switch and MC just makes it visible.
+- Mission Control swallows the Dock swipe gesture. A switch issued while MC is
+  up does nothing at all (it fails cleanly, it does not corrupt anything). To
+  switch from inside MC you have to dismiss it and poll until it is really
+  closed first, then switch.
 - `NSWindow.frame` lies after a display change. The window server relocates your
   windows and AppKit keeps reporting the old rect, so `setFrame:` to the rect
   AppKit already believes it has is a no-op and the window never comes back.

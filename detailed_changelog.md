@@ -1,3 +1,53 @@
+[2026-07-30 19:00:08 UTC] [SpaceBadge/Digit switching from Mission Control, reinstated]
+[Attempt #3 - see the 2026-07-20 entry for attempts #1 and #2]
+[Files Changed]
+- spacebadge.m:96-100 - keyTap, mcArmed, maxOrd globals.
+- spacebadge.m:102-108 - postEscape().
+- spacebadge.m:110-114 - digitForKeycode(), ANSI number row 1..9.
+- spacebadge.m:116-129 - switchToOrd(). Posts escape, then waits on a background
+  queue until mcOpen() is false before spawning SpaceTool switch <n>. Spawning
+  reuses the tested switch path rather than duplicating the gesture code.
+- spacebadge.m:131-144 - tapCallback(). Passes everything through unless MC is
+  armed; ignores any digit carrying a modifier or past maxOrd; returns NULL to
+  swallow the ones it acts on.
+- spacebadge.m:146-155 - installTap(), created disabled.
+- spacebadge.m:275-283 - tick() arms and disarms the tap on the MC edge.
+- spacebadge.m:246 - maxOrd tracked in showStrip, so a digit past the last space
+  falls through instead of doing nothing visible.
+- spacebadge.m:395-399 - Accessibility check with prompt, then installTap().
+[Why this works now when it did not on 2026-07-20]
+The earlier attempt switched with the SkyLight bridge, which desyncs the Dock
+(see the 18:46:50 entry). That desync was misattributed to "switching while MC is
+open" and killed the feature. With sw now driving the Dock's own gesture, the
+Dock stays coherent, so the feature is viable again. The tap half was always
+fine, as that entry recorded.
+[The one real constraint]
+Mission Control swallows the Dock swipe gesture. Tested directly: with MC open,
+`sw comms` posted its gesture, nothing happened, and the new verification loop
+returned 1. So the switch cannot merely overlap MC teardown, MC has to be gone
+first. Hence escape, then poll mcOpen() until false (up to 2s), then switch.
+This is the sequence the 2026-07-20 entry designed but never tested.
+[Possible Ripple Effects]
+- SpaceBadge needs Accessibility again. The grant from the reverted attempt was
+  still present and worked immediately, which is what the pinned-to-OU codesign
+  requirement was added for. Without it CGEventTapCreate returns NULL, installTap
+  gives up, and everything else in the daemon is unaffected.
+- A session-wide keyDown tap now exists. It is created disabled and only enabled
+  between the MC-open and MC-close edges in tick(), so it is inert the rest of
+  the time. Verified: with MC closed, a posted "4" did not switch spaces.
+- Re-enables itself on kCGEventTapDisabledByTimeout, which the window server will
+  do if a callback ever runs long.
+- Digits are swallowed only when acted on. Out of range digits pass through, so
+  they still reach anything behind MC.
+[Testing Notes]
+All verified by screenshot and by observed space, not by API read alone.
+- 1 pressed in MC on unified -> MC closed, landed on comms.
+- 4 pressed in MC -> landed on unified. MC bar afterwards highlights Desktop 2
+  following a 2 press, and the MC render is all real scaled thumbnails with no
+  ghost rectangles and no stuck chrome.
+- 9 pressed with only 6 spaces -> space unchanged and MC stayed open.
+- 4 pressed with MC closed -> space unchanged.
+
 [2026-07-30 18:46:50 UTC] [SpaceBadge/Badges and MC strip survive a display change]
 [Attempt #1]
 [Files Changed]

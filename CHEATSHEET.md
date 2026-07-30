@@ -44,12 +44,14 @@ that way, so it works now.
 ## Daemon control
 
 ```sh
+make install-agent                                    # rebuild + reload (idempotent)
 launchctl bootout gui/501/dev.umanzor.spacebadge      # stop + disable until login
 launchctl bootstrap gui/501 ~/Library/LaunchAgents/dev.umanzor.spacebadge.plist  # re-enable
 ```
 
-After `make install`, restart with bootout + bootstrap, not `kickstart -k`.
-launchd caches the old cdhash and kickstart dies with `OS_REASON_CODESIGNING`.
+`make install-agent` writes the plist and does the bootout + bootstrap for you.
+Never `kickstart -k` after a rebuild: launchd caches the old cdhash and it dies
+with `OS_REASON_CODESIGNING`.
 
 ## Build
 
@@ -59,8 +61,9 @@ needs an Accessibility grant for the digit switching, and an adhoc signature
 changes every build, so macOS drops the grant each rebuild. The designated
 requirement is pinned to the team OU so cert renewal won't drop it either.
 
-`make install` does not write the LaunchAgent plist. See the README if you are
-setting this up on a new machine.
+`make install` covers the binaries, bundles and shims. `make install-agent` does
+that plus the LaunchAgent and a daemon reload, which is what you want on a new
+machine or after any rebuild.
 
 ## Where things live
 
@@ -77,9 +80,8 @@ setting this up on a new machine.
 
 - `bring`/`sw` stop working after a macOS update: the private SkyLight bridge
   changed. Check yabai issue #2789 and asmvik/yabai for the new API shape.
-- Badge on wrong space or stacked badges: restart the daemon with bootout then
-  bootstrap (above). `kickstart -k` works only if you have not rebuilt since the
-  daemon started.
+- Badge on wrong space or stacked badges: `make install-agent` to restart the
+  daemon. `kickstart -k` works only if you have not rebuilt since it started.
 - `1`-`9` does nothing in Mission Control: SpaceBadge lost its Accessibility
   grant. Most likely you rebuilt with adhoc signing, which changes the signature
   every time. Set up `codesign.env` and re-grant once.

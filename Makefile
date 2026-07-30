@@ -1,6 +1,7 @@
 CFLAGS = -fobjc-arc -O2 -Wno-deprecated-declarations
 APPS = $(HOME)/Applications
 BIN = $(HOME)/.local/bin
+AGENT = $(HOME)/Library/LaunchAgents/dev.umanzor.spacebadge.plist
 
 all: spacetool spacebadge
 
@@ -49,6 +50,26 @@ install: all
 	printf '#!/bin/sh\nexec "$$HOME/Applications/SpaceTool.app/Contents/MacOS/SpaceTool" switch "$$@"\n' > $(BIN)/sw
 	printf '#!/bin/sh\nexec "$$HOME/Applications/SpaceTool.app/Contents/MacOS/SpaceTool" bring "$$@"\n' > $(BIN)/bring
 	chmod +x $(BIN)/spacename $(BIN)/sw $(BIN)/bring
+
+# bootout before bootstrap, never kickstart: launchd caches the old cdhash and
+# kickstart dies with OS_REASON_CODESIGNING once the signature changes
+install-agent: install
+	mkdir -p $(dir $(AGENT))
+	printf '%s\n' \
+	  '<?xml version="1.0" encoding="UTF-8"?>' \
+	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+	  '<plist version="1.0"><dict>' \
+	  '<key>Label</key><string>dev.umanzor.spacebadge</string>' \
+	  '<key>ProgramArguments</key><array>' \
+	  '<string>$(APPS)/SpaceBadge.app/Contents/MacOS/SpaceBadge</string>' \
+	  '</array>' \
+	  '<key>RunAtLoad</key><true/>' \
+	  '<key>KeepAlive</key><true/>' \
+	  '</dict></plist>' > $(AGENT)
+	plutil -lint $(AGENT)
+	-launchctl bootout gui/$$(id -u)/dev.umanzor.spacebadge 2>/dev/null
+	launchctl bootstrap gui/$$(id -u) $(AGENT)
+	@echo "  agent loaded. 1-9 inside Mission Control needs Accessibility for SpaceBadge."
 
 clean:
 	rm -f spacetool spacebadge

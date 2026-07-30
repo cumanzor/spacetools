@@ -91,8 +91,14 @@ Gotchas learned the hard way:
 ## Setup
 
 ```sh
-make install   # builds, bundles to ~/Applications, shims to ~/.local/bin
+make install-agent   # everything: build, bundle, shims, LaunchAgent, reload
 ```
+
+`make install` alone does the build, the `~/Applications` bundles and the
+`~/.local/bin` shims, but leaves the daemon and its LaunchAgent untouched.
+`install-agent` runs that first, then writes
+`~/Library/LaunchAgents/dev.umanzor.spacebadge.plist` and reloads the daemon.
+It is idempotent, so it is also the right way to restart after a rebuild.
 
 **Codesigning matters here.** Copy `codesign.env.example` to `codesign.env`
 (gitignored) to sign with a real identity. Adhoc signing works, but SpaceBadge
@@ -112,25 +118,9 @@ If it ever prints `the Dock ignored the gesture`, grant Accessibility to the
 calling app, or to `~/Applications/SpaceTool.app` if you are running the binary
 directly.
 
-**LaunchAgent.** `make install` does *not* write the plist. Create
-`~/Library/LaunchAgents/dev.umanzor.spacebadge.plist` once:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>dev.umanzor.spacebadge</string>
-  <key>ProgramArguments</key><array>
-    <string>/Users/carlos/Applications/SpaceBadge.app/Contents/MacOS/SpaceBadge</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-</dict></plist>
-```
-
-then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.umanzor.spacebadge.plist`.
-After any later `make install`, restart it with bootout then bootstrap, not
-`kickstart -k`: launchd caches the old cdhash and kickstart dies with
+**LaunchAgent.** `make install-agent` writes the plist (`RunAtLoad` +
+`KeepAlive`) and reloads the daemon with bootout then bootstrap. Never use
+`kickstart -k` after a rebuild: launchd caches the old cdhash and it dies with
 `OS_REASON_CODESIGNING`.
 
 **Raycast.** Scripts live in `~/Documents/scripts/Raycast`

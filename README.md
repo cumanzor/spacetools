@@ -43,8 +43,10 @@ The key tap is created disabled and only armed between the MC-open and MC-close
 edges, so it is inert the rest of the time. This needs Accessibility; without it
 `CGEventTapCreate` returns NULL and only this feature is lost.
 
-Cadence: Mission Control state is polled every 300ms, the name file is checked
-for changes every 2s, and a full resync runs every 15s. A resync also runs on
+Cadence: Mission Control state is polled every 300ms, and while MC is open the
+strip is rebuilt on every poll so that reordering spaces inside it takes effect
+immediately (the rebuild returns early when the text has not changed). The name
+file is checked for changes every 2s, and a full resync runs every 15s. A resync also runs on
 `NSWorkspaceActiveSpaceDidChangeNotification`, and 1s and 3.5s after
 `NSApplicationDidChangeScreenParametersNotification` (a dock or undock fires it
 repeatedly and `visibleFrame` keeps moving for a beat after the last one).
@@ -91,6 +93,13 @@ Gotchas learned the hard way:
   up does nothing at all (it fails cleanly, it does not corrupt anything). To
   switch from inside MC you have to dismiss it and poll until it is really
   closed first, then switch.
+- An NSTextField sized by its superview's autoresizing mask will silently clip
+  when you swap in text of the same width. Reordering spaces rearranges the same
+  glyphs, so the window never resizes, so autoresizing never fires, so the label
+  keeps a width that belonged to some older string. Set the label's frame
+  explicitly whenever the text changes, and leave it a couple of points of
+  slack: the field's cell wants slightly more room than
+  `-[NSAttributedString size]` reports.
 - `NSWindow.frame` lies after a display change. The window server relocates your
   windows and AppKit keeps reporting the old rect, so `setFrame:` to the rect
   AppKit already believes it has is a no-op and the window never comes back.

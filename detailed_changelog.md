@@ -1,3 +1,50 @@
+[2026-07-30 21:36:30 UTC] [SpaceBadge/MC strip goes stale and clips after a space reorder]
+[Attempt #1]
+[Files Changed]
+- spacebadge.m:24 - stripText property, the last rendered string.
+- spacebadge.m:246-249 - showStrip returns early when the text is unchanged, so
+  it is cheap to call on every tick. sz.width is now ceil'd.
+- spacebadge.m:262-274 - the label is no longer created with an autoresizing
+  mask and left alone. Its frame is set from the content bounds on every update,
+  after place: has run, and the inset went 22 -> 20 so there is 4pt of slack
+  against a window that is still text+44 wide.
+- spacebadge.m:290 - tick calls showStrip on every poll while MC is open, not
+  only on the open edge.
+[Two bugs, both needed]
+1. The strip only rebuilt on the MC-open edge. Reordering spaces happens inside
+   Mission Control, with MC already open, so mcVisible was already YES and
+   showStrip never ran again. The strip kept the text from when MC opened.
+2. Reordering produces the pathological case for the label: moving "personal"
+   from slot 5 to slot 6 rearranges the same glyphs, so the string width is
+   identical. The window frame therefore does not change, place: correctly does
+   nothing, and because nothing resized the window, autoresizing never fired and
+   the label kept whatever width it last had. The new text was set into a label
+   still sized for an older, narrower string, and the tail was clipped.
+[Measurements]
+Before: strip window 630pt wide, text drawn from 23 to 516, leaving 114pt of
+empty pill. The missing 94pt is " personal" at 22pt semibold. The label was
+about 494 wide where it should have been 586.
+After: text 23 to 605 in the same 630pt window, 25pt trailing blank, matching
+the 20pt inset on the left.
+A standalone harness confirmed autoresizing itself does not drift: fifteen
+resize cycles across five different strings held label == window - 44 exactly
+every time. So the fault was never drift, it was the resize not happening at all.
+It also showed the field's cell wants slightly more than the attributed string
+reports (585.5 against 585.2), which is why the label now gets 4pt of slack
+rather than exactly the string width.
+[Possible Ripple Effects]
+- showStrip now runs every 300ms while MC is open. The early return compares one
+  string, but it still calls CGSCopyManagedDisplaySpaces and re-reads
+  spacenames.json each time to build that string. Fine for the seconds MC is up.
+- The label no longer relies on its autoresizing mask at all. The mask is gone,
+  so nothing competes with the explicit frame.
+[Testing Notes]
+- Full string renders again after a reorder, verified by cropping the strip
+  window's exact bounds and measuring glyph extent, not by eye.
+- Live update verified with MC held open: renaming a space rewrote the strip
+  within ~1s, the window resized 630 -> 731 and re-centred 837 -> 786, and the
+  text stayed within its margins. Name map restored and diffed afterwards.
+
 [2026-07-30 21:12:12 UTC] [spacetool/send verb, plus install-agent and uninstall targets]
 [Attempt #1]
 [Files Changed]

@@ -21,6 +21,7 @@ static CopySpacesFn copySpacesF;
 @property NSDate *mapMtime;
 @property BOOL mcVisible;
 @property NSTimer *settle;
+@property NSString *stripText;
 @end
 
 static NSString *mapPath(void) {
@@ -270,10 +271,13 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
     }
     maxOrd = (int)parts.count;
     NSString *text = [parts componentsJoinedByString:@"    "];
+    if (self.strip && [text isEqualToString:self.stripText]) { self.strip.alphaValue = 1; return; }
+    self.stripText = text;
     NSAttributedString *t = [[NSAttributedString alloc] initWithString:text attributes:@{
         NSFontAttributeName: [NSFont systemFontOfSize:22 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: [NSColor whiteColor] }];
     NSSize sz = t.size;
+    sz.width = ceil(sz.width);
     // screens[0] is the menu bar display; mainScreen is key-window relative and
     // this process never has a key window
     NSRect scr = ([NSScreen screens].firstObject ?: [NSScreen mainScreen]).frame;
@@ -287,14 +291,20 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
         v.layer.backgroundColor = [[NSColor blackColor] colorWithAlphaComponent:0.6].CGColor;
         v.layer.cornerRadius = 14;
         NSTextField *l = [NSTextField labelWithAttributedString:t];
-        l.frame = NSInsetRect(v.bounds, 22, 10);
-        l.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         [v addSubview:l];
         self.strip.alphaValue = 0;
         [self.strip orderFrontRegardless];   // pre-shown: ordering during MC dismisses it
     }
-    ((NSTextField *)self.strip.contentView.subviews.firstObject).attributedStringValue = t;
+    NSTextField *l = self.strip.contentView.subviews.firstObject;
+    l.attributedStringValue = t;
     [self place:self.strip at:frame server:serverFrames()];
+    // size the label off the new bounds by hand. Autoresizing only fires when
+    // the window actually changes size, and place: leaves it alone whenever the
+    // frame already matches, which is exactly what reordering spaces produces:
+    // same glyphs, same width, different text. The 20 inset against a 44 wider
+    // window leaves 4pt of slack, because the field's cell wants a shade more
+    // than the attributed string reports.
+    l.frame = NSInsetRect(((NSView *)self.strip.contentView).bounds, 20, 10);
     self.strip.alphaValue = 1;
 }
 
@@ -312,8 +322,8 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
 
 - (void)tick {
     BOOL mc = [self missionControlOpen];
+    if (mc) [self showStrip];   // spaces get reordered while it is open, so keep up
     if (mc && !self.mcVisible) {
-        [self showStrip];
         for (NSWindow *b in self.badges.allValues) b.alphaValue = 0;
         mcArmed = YES;
         if (keyTap) CGEventTapEnable(keyTap, true);

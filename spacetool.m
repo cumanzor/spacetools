@@ -213,6 +213,30 @@ static int cmdBring(NSString *query) {
     return 0;
 }
 
+// onscreen windows come back front to back, so the first real one is what the
+// user is looking at, and onscreen already scopes us to the current space
+static int cmdSend(NSString *query) {
+    NSDictionary *dest = matchSpace(query);
+    if (!dest) { fprintf(stderr, "send: no space matching \"%s\"\n", query.UTF8String); return 1; }
+    if ([dest[@"current"] boolValue]) {
+        printf("already on %s\n", label(dest).UTF8String); return 0;
+    }
+    NSArray *list = CFBridgingRelease(CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+    for (NSDictionary *w in list) {
+        if ([w[(id)kCGWindowLayer] intValue] != 0) continue;
+        CGRect b; CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)w[(id)kCGWindowBounds], &b);
+        if (b.size.width < 120 || b.size.height < 120) continue;
+        moveWindowsToSpace(@[w[(id)kCGWindowNumber]], [dest[@"sid"] unsignedLongLongValue]);
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.35]];
+        printf("sent %s to %s\n", [w[(id)kCGWindowOwnerName] description].UTF8String,
+               label(dest).UTF8String);
+        return 0;
+    }
+    fprintf(stderr, "send: no window to send\n");
+    return 1;
+}
+
 int main(int argc, char **argv) {
   @autoreleasepool {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -234,7 +258,9 @@ int main(int argc, char **argv) {
     if ([mode isEqualToString:@"set"])     return cmdSet(arg);
     if ([mode isEqualToString:@"switch"])  return arg.length ? cmdSwitch(arg) : cmdList();
     if ([mode isEqualToString:@"bring"])   return arg.length ? cmdBring(arg) : 2;
-    fprintf(stderr, "usage: spacetool current|list|set <name>|switch <query>|bring <app>\n");
+    if ([mode isEqualToString:@"send"])    return arg.length ? cmdSend(arg) : 2;
+    fprintf(stderr, "usage: spacetool current|list|set <name>|switch <query>"
+                    "|bring <app>|send <space>\n");
     return 2;
   }
 }

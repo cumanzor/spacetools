@@ -21,7 +21,12 @@ spacename list         # all spaces, * = current
 spacename set comms    # name current space ("" clears)
 sw comm                # switch by name prefix or number
 bring spark            # move app windows here + focus (fuzzy app match)
+send comms             # push the focused window to another space, stay put
 ```
+
+`bring` pulls a named app's windows to you. `send` pushes the window in front of
+you away. `send` acts on whatever is frontmost, so check what that is before
+firing it at a space.
 
 ## Badges
 

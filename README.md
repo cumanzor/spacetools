@@ -12,15 +12,25 @@ spacename list       # all spaces, current marked with *
 spacename set comms  # name the space you are on (empty name clears)
 sw comm              # switch to space by name prefix or number
 bring messages       # move an app's windows to this space and focus it
+send comms           # push the focused window to another space, stay put
 ```
+
+`bring` and `send` are opposites. `bring` pulls every window of a named app to
+where you are and focuses it. `send` pushes the one window you are looking at
+somewhere else and leaves you where you are.
 
 Names live in `~/.config/spacenames.json`, keyed by space UUID (stable across
 reboots, unlike ManagedSpaceIDs).
 
-`sw` matches in this order: exact name, name prefix, name substring, then
-ordinal. It verifies the switch actually landed before returning, so it exits
-non-zero if the Dock ignored it (see Setup). All commands exit 0 on success, 1
-on a miss, and 2 on bad usage.
+`sw` and `send` resolve a space the same way: exact name, name prefix, name
+substring, then ordinal. `sw` verifies the switch actually landed before
+returning, so it exits non-zero if the Dock ignored it (see Setup). All commands
+exit 0 on success, 1 on a miss, and 2 on bad usage.
+
+`send` takes the frontmost window, which it finds by asking for onscreen windows
+(they come back front to back, and "onscreen" already means the current space)
+and taking the first one at layer 0 bigger than 120x120. So it acts on whatever
+you are actually looking at, which is not always the app you were thinking of.
 
 ## SpaceBadge daemon
 

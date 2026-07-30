@@ -1,3 +1,54 @@
+[2026-07-30 21:12:12 UTC] [spacetool/send verb, plus install-agent and uninstall targets]
+[Attempt #1]
+[Files Changed]
+- spacetool.m:214-236 - cmdSend(). Resolves the destination with the existing
+  matchSpace(), then moves the frontmost window with the existing
+  moveWindowsToSpace(). No new machinery; bring was already this operation with
+  the destination pinned to the current space.
+- spacetool.m:259 - wired into main, usage string updated.
+- Makefile:50,52 - send shim written and chmodded alongside the other three.
+- Makefile:56-72 - install-agent target: runs install, writes the LaunchAgent
+  plist from $(APPS), plutil -lints it, then bootout followed by bootstrap.
+- Makefile:74-80 - uninstall target, using the same $(APPS)/$(BIN)/$(AGENT)
+  variables install writes with so the two cannot drift.
+[Design]
+send takes the focused window rather than a named app. Two arguments
+(`send <app> <space>`) would have been symmetric with bring, but arg is built by
+joining argv with spaces and both app names ("Spark Mail") and space names can
+contain them, so it would have needed a delimiter or a --to flag. One argument
+parses cleanly and matches the common idiom (yabai's window --space).
+It does not follow the window. Sending is usually about clearing your screen,
+and `sw` is right there if you want to go too.
+The frontmost window comes from CGWindowListCopyWindowInfo with
+kCGWindowListOptionOnScreenOnly: results are ordered front to back, and
+"onscreen" already restricts to the current space, so the first layer-0 window
+over 120x120 is what the user is looking at. Same size and layer filter bring
+uses.
+[Possible Ripple Effects]
+- send acts on whatever is frontmost, which is not always what you meant. Found
+  this during testing: running `send 4` from the comms space moved Slack, not
+  the test window, because Slack was in front. It prints what it moved, which is
+  the only real mitigation. Documented in README and CHEATSHEET.
+- `send` is a fairly generic name for something on PATH. Checked, nothing else
+  in PATH claims it on this machine.
+- No Raycast script command for send yet; the other four live outside this repo
+  in ~/Documents/scripts/Raycast.
+[Testing Notes]
+- Error paths: no arg exits 2, unknown space exits 1, target already current
+  prints "already on X" and exits 0.
+- Functional: opened a throwaway Finder window on personal, confirmed it was
+  first in the front-to-back list, `send comms` moved it, CGSCopySpacesForWindows
+  confirmed it landed on space 3, and the current space did not change.
+- Ordinal form works (`send 4` resolved through matchSpace's ordinal branch).
+- install-agent: generated plist is semantically identical to the hand-made one
+  (plutil -convert json diff empty), lints clean, second run exits 0, and digit
+  switching still worked afterwards, so the Accessibility grant survives the
+  re-sign as the pinned designated requirement intends.
+- uninstall: exercised against a throwaway tree by overriding APPS, BIN and
+  AGENT. Everything removed, real install untouched. Note the launchctl bootout
+  line targets the label, so it stops the real daemon even when the paths are
+  overridden.
+
 [2026-07-30 19:00:08 UTC] [SpaceBadge/Digit switching from Mission Control, reinstated]
 [Attempt #3 - see the 2026-07-20 entry for attempts #1 and #2]
 [Files Changed]

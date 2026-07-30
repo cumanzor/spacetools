@@ -49,7 +49,8 @@ install: all
 	printf '#!/bin/sh\nexec "$$HOME/Applications/SpaceTool.app/Contents/MacOS/SpaceTool" "$$@"\n' > $(BIN)/spacename
 	printf '#!/bin/sh\nexec "$$HOME/Applications/SpaceTool.app/Contents/MacOS/SpaceTool" switch "$$@"\n' > $(BIN)/sw
 	printf '#!/bin/sh\nexec "$$HOME/Applications/SpaceTool.app/Contents/MacOS/SpaceTool" bring "$$@"\n' > $(BIN)/bring
-	chmod +x $(BIN)/spacename $(BIN)/sw $(BIN)/bring
+	printf '#!/bin/sh\nexec "$$HOME/Applications/SpaceTool.app/Contents/MacOS/SpaceTool" send "$$@"\n' > $(BIN)/send
+	chmod +x $(BIN)/spacename $(BIN)/sw $(BIN)/bring $(BIN)/send
 
 # bootout before bootstrap, never kickstart: launchd caches the old cdhash and
 # kickstart dies with OS_REASON_CODESIGNING once the signature changes
@@ -75,7 +76,7 @@ uninstall:
 	-launchctl bootout gui/$$(id -u)/dev.umanzor.spacebadge 2>/dev/null
 	rm -f $(AGENT)
 	rm -rf $(APPS)/SpaceTool.app $(APPS)/SpaceBadge.app
-	rm -f $(BIN)/spacename $(BIN)/sw $(BIN)/bring
+	rm -f $(BIN)/spacename $(BIN)/sw $(BIN)/bring $(BIN)/send
 	@echo "  removed. names kept at ~/.config/spacenames.json, delete it to drop those too."
 	@echo "  SpaceBadge's Accessibility entry has to be removed by hand."
 

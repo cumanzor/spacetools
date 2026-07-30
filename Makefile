@@ -71,5 +71,13 @@ install-agent: install
 	launchctl bootstrap gui/$$(id -u) $(AGENT)
 	@echo "  agent loaded. 1-9 inside Mission Control needs Accessibility for SpaceBadge."
 
+uninstall:
+	-launchctl bootout gui/$$(id -u)/dev.umanzor.spacebadge 2>/dev/null
+	rm -f $(AGENT)
+	rm -rf $(APPS)/SpaceTool.app $(APPS)/SpaceBadge.app
+	rm -f $(BIN)/spacename $(BIN)/sw $(BIN)/bring
+	@echo "  removed. names kept at ~/.config/spacenames.json, delete it to drop those too."
+	@echo "  SpaceBadge's Accessibility entry has to be removed by hand."
+
 clean:
 	rm -f spacetool spacebadge

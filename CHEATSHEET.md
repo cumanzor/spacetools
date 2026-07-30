@@ -63,7 +63,8 @@ requirement is pinned to the team OU so cert renewal won't drop it either.
 
 `make install` covers the binaries, bundles and shims. `make install-agent` does
 that plus the LaunchAgent and a daemon reload, which is what you want on a new
-machine or after any rebuild.
+machine or after any rebuild. `make uninstall` takes it all back out, keeping
+the names file and the Accessibility entry.
 
 ## Where things live
 

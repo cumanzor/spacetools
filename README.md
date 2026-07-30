@@ -134,11 +134,9 @@ SpaceTool.app.
 ## Uninstall
 
 ```sh
-launchctl bootout gui/$(id -u)/dev.umanzor.spacebadge
-rm -f ~/Library/LaunchAgents/dev.umanzor.spacebadge.plist
-rm -rf ~/Applications/SpaceTool.app ~/Applications/SpaceBadge.app
-rm -f ~/.local/bin/spacename ~/.local/bin/sw ~/.local/bin/bring
+make uninstall   # daemon, LaunchAgent, both bundles, all three shims
 ```
 
-`~/.config/spacenames.json` is left alone; delete it too if you want the names
-gone. Remove the SpaceBadge entry from the Accessibility list by hand.
+Two things it deliberately leaves: `~/.config/spacenames.json`, so your names
+survive a reinstall (delete it if you want them gone), and SpaceBadge's entry in
+the Accessibility list, which only you can remove.

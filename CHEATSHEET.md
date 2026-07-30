@@ -7,6 +7,7 @@
 | `sw comm` | switch to the space named "comms" (prefix match) |
 | `sw 3` | switch to Desktop 3 |
 | `bring messages` | pull Messages' windows to this space and focus them |
+| `send comms` | push the frontmost window to comms, stay where you are |
 | `name this space` + `comms` | name the space you are on |
 | `name this space` (empty arg) | clear the current space's name |
 | `list spaces` | all spaces, `*` marks where you are |
@@ -78,7 +79,7 @@ the names file and the Accessibility entry.
 | names | ~/.config/spacenames.json (keyed by space UUID, survives reboots) |
 | CLIs | ~/.local/bin/{spacename,sw,bring} (shims into SpaceTool.app) |
 | apps | ~/Applications/{SpaceTool,SpaceBadge}.app |
-| Raycast scripts | ~/Documents/scripts/Raycast/{sw,bring,name-space,list-spaces}.sh |
+| Raycast scripts | ~/Documents/scripts/Raycast/{sw,bring,send,name-space,list-spaces}.sh |
 | LaunchAgent | ~/Library/LaunchAgents/dev.umanzor.spacebadge.plist |
 | source | ~/repos/AI/spacetools (make install rebuilds everything) |
 

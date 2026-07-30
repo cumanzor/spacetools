@@ -31,8 +31,10 @@ uses.
   the only real mitigation. Documented in README and CHEATSHEET.
 - `send` is a fairly generic name for something on PATH. Checked, nothing else
   in PATH claims it on this machine.
-- No Raycast script command for send yet; the other four live outside this repo
-  in ~/Documents/scripts/Raycast.
+- Raycast script command added at ~/Documents/scripts/Raycast/send.sh, matching
+  the other four (silent mode, so the "sent X to Y" line surfaces as a HUD,
+  which matters given send acts on whatever is frontmost). Those scripts live
+  outside this repo and are not version controlled with it.
 [Testing Notes]
 - Error paths: no arg exits 2, unknown space exits 1, target already current
   prints "already on X" and exits 0.

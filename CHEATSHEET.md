@@ -11,6 +11,10 @@
 | `name this space` + `comms` | name the space you are on |
 | `name this space` (empty arg) | clear the current space's name |
 | `list spaces` | all spaces, `*` marks where you are |
+| `create space` + `dev` | add a desktop at the end named dev (name optional) |
+| `remove space` + `dev` | remove that desktop, windows merge to a neighbor |
+| `save space layout` | snapshot desktop count + names |
+| `restore space layout` | recreate missing desktops, reapply names |
 
 Or open Mission Control and press `1`-`9`.
 
@@ -90,7 +94,7 @@ the names file and the Accessibility entry.
 | layout snapshot | ~/.config/spacelayout.json (written by `spacename layout save`) |
 | CLIs | ~/.local/bin/{spacename,sw,bring} (shims into SpaceTool.app) |
 | apps | ~/Applications/{SpaceTool,SpaceBadge}.app |
-| Raycast scripts | ~/Documents/scripts/Raycast/{sw,bring,send,name-space,list-spaces}.sh |
+| Raycast scripts | ~/Documents/scripts/Raycast/{sw,bring,send,name-space,list-spaces,create-space,remove-space,save-layout,restore-layout}.sh |
 | LaunchAgent | ~/Library/LaunchAgents/dev.umanzor.spacebadge.plist |
 | source | ~/repos/AI/spacetools (make install rebuilds everything) |
 

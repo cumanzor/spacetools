@@ -178,9 +178,12 @@ message and exit 1 when it is missing.
 `OS_REASON_CODESIGNING`.
 
 **Raycast.** Scripts live in `~/Documents/scripts/Raycast`
-(`sw.sh`, `bring.sh`, `send.sh`, `name-space.sh`, `list-spaces.sh`). They are not
-version controlled with this repo. The directory has to be added once under
-Raycast's Script Commands settings.
+(`sw.sh`, `bring.sh`, `send.sh`, `name-space.sh`, `list-spaces.sh`,
+`create-space.sh`, `remove-space.sh`, `save-layout.sh`, `restore-layout.sh`).
+They are not version controlled with this repo. The directory has to be added
+once under Raycast's Script Commands settings. The create/remove/restore ones
+need Raycast to hold the Accessibility grant, since TCC attributes their AX
+calls to Raycast.
 
 Binaries must live inside an .app bundle; the WindowManagement XPC service
 rejects bare executables. `~/.local/bin/{spacename,sw,bring}` are shims into

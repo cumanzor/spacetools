@@ -55,6 +55,11 @@ static NSDictionary *currentSpaceInfo(void) {
 static NSDictionary *matchSpace(NSString *query) {
     NSArray *all = spaceInfos();
     NSString *q = query.lowercaseString;
+    // a bare number is an ordinal before it is a name: "1" must not substring-
+    // match a space named "messaging1", and the MC digit tap passes ordinals
+    if (q.length && [q rangeOfCharacterFromSet:
+            [NSCharacterSet decimalDigitCharacterSet].invertedSet].location == NSNotFound)
+        for (NSDictionary *s in all) if ([s[@"ord"] intValue] == q.intValue) return s;
     for (NSDictionary *s in all) if ([[s[@"name"] lowercaseString] isEqualToString:q]) return s;
     for (NSDictionary *s in all) if ([s[@"name"] length] && [[s[@"name"] lowercaseString] hasPrefix:q]) return s;
     for (NSDictionary *s in all) if ([s[@"name"] length] && [[s[@"name"] lowercaseString] containsString:q]) return s;

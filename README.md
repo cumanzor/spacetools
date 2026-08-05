@@ -41,8 +41,10 @@ somewhere else and leaves you where you are.
 Names live in `~/.config/spacenames.json`, keyed by space UUID (stable across
 reboots, unlike ManagedSpaceIDs).
 
-`sw` and `send` resolve a space the same way: exact name, name prefix, name
-substring, then ordinal. `sw` verifies the switch actually landed before
+`sw`, `send` and `rm` resolve a space the same way: a bare number is an
+ordinal first (so `sw 1` goes to Desktop 1 even when some space is named
+"messaging1"), then exact name, name prefix, name substring, and finally
+ordinal as a fallback for queries like `2fa` that only start with digits. `sw` verifies the switch actually landed before
 returning, so it exits non-zero if the Dock ignored it (see Setup). All commands
 exit 0 on success, 1 on a miss, and 2 on bad usage.
 

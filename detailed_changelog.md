@@ -1,3 +1,31 @@
+[2026-08-05 19:02:07 UTC] [spacetool/Bare-number queries beat digit-containing names]
+[Attempt #1]
+[Files Changed]
+- spacetool.m:56-61 - matchSpace tries the ordinal first when the query is all
+  digits, falling through to name matching when no such ordinal exists. The
+  trailing intValue fallback stays for queries like "2fa" that merely start
+  with digits.
+- README.md - resolution order description updated.
+[Root cause]
+matchSpace's order was exact name, prefix, substring, then ordinal. A space
+named "messaging1" contains "1", so `sw 1` hit the substring branch and never
+reached the ordinal branch. Latent since the initial release; surfaced the
+moment a space name contained a digit. The MC digit tap is also affected
+because SpaceBadge spawns `SpaceTool switch <n>` with ordinals through the
+same resolver.
+[Possible Ripple Effects]
+- A space whose name is purely numeric ("42") is now reachable by name only
+  when no Desktop 42 exists; the ordinal wins otherwise. Acceptable: a bare
+  number canonically means the Desktop N position everywhere else in macOS.
+- sw, send, rm and the MC digit tap all share matchSpace, so all four change
+  behavior together.
+[Testing Notes]
+Live state during the test: comms(1), Desktop 2(current), Desktop 3,
+messaging1(4).
+- sw 1 -> "switched to comms", spacename confirms (was landing on messaging1).
+- sw mess -> messaging1, prefix matching intact.
+- sw 2 -> back to the origin space, round trip complete.
+
 [2026-08-05 18:30:54 UTC] [spacetool/create, rm, and layout save/restore verbs]
 [Attempt #1]
 [Files Changed]

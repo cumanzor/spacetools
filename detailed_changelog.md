@@ -1,3 +1,46 @@
+[2026-08-05 17:49:09 UTC] [SpaceBadge/MC strip stays displaced after a monitor config change]
+[Attempt #1]
+[Files Changed]
+- spacebadge.m:273-274 - the unchanged-text early return in showStrip is gone.
+  The text, frame and place: call now run on every invocation.
+- spacebadge.m:298-303 - stripText guards only the label text assignment now;
+  place: and the by-hand label re-frame are unconditional.
+[Root cause]
+Regression from the 2026-07-30 21:36 reorder fix. Its early return (strip
+exists and text unchanged -> set alpha, return) sat upstream of the place: call
+the 18:46:50 display-change fix depends on, and unchanged text is the steady
+state - so once the window server displaced the strip during a monitor config
+change, nothing ever repaired it. The badges were fine because their repair
+lives in sync(), which has no such short circuit. Probe on the live daemon
+showed the strip at CG 0,0 (layer 3, under the Dock's layer-18 MC chrome),
+matching Carlos's screenshot of it dimmed behind the desktop thumbnails.
+[Possible Ripple Effects]
+- showStrip now calls serverFrames() (a full CGWindowList pass filtered to our
+  pid) every 300ms while MC is open, on top of the CGS and JSON reads it already
+  did per tick. place: still no-ops when the server frame matches the target,
+  so steady state posts no frame changes.
+- The label frame is reasserted every call. It has no autoresizing mask, so
+  nothing competes with it.
+[Testing Notes]
+- Pre-fix probe: strip window at CG 0,0 133x46 while the badges sat correctly
+  at y 44 right-aligned - the exact displacement signature the 18:46:50 entry
+  documented, now permanent because the repair was skipped.
+- Post-fix: rebuilt, agent reloaded. Note the first launchctl bootstrap after
+  bootout returned error 5 (raced the old instance teardown); a retry 2s later
+  succeeded. MC opened, screenshot: strip on its pill, white, centred at CG
+  1085,138 on the 2304pt main display, clear of the chrome.
+- The displacement itself cannot be re-induced from outside the process
+  (SLSMoveWindow is a cross-process no-op, per the 2026-07-30 entry), so the
+  repair is verified by the placement path now being unconditional plus the
+  correct live render.
+- Found while verifying, not caused by the fix: CGS reports a single space.
+  com.apple.spaces.plist was rewritten at 11:39:04 local, one minute after
+  Carlos's screenshot still showed 7 desktops (with black previews), and none
+  of the named-space uuids survive in it - macOS consolidated the spaces during
+  a display reconfiguration right after boot. The strip rendering "1 comms" is
+  correct for that state. The spacenames.json map keeps the dead uuids, so
+  recreated spaces need spacename set again.
+
 [2026-07-30 21:36:30 UTC] [SpaceBadge/MC strip goes stale and clips after a space reorder]
 [Attempt #1]
 [Files Changed]

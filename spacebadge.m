@@ -271,8 +271,6 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
     }
     maxOrd = (int)parts.count;
     NSString *text = [parts componentsJoinedByString:@"    "];
-    if (self.strip && [text isEqualToString:self.stripText]) { self.strip.alphaValue = 1; return; }
-    self.stripText = text;
     NSAttributedString *t = [[NSAttributedString alloc] initWithString:text attributes:@{
         NSFontAttributeName: [NSFont systemFontOfSize:22 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: [NSColor whiteColor] }];
@@ -296,7 +294,12 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
         [self.strip orderFrontRegardless];   // pre-shown: ordering during MC dismisses it
     }
     NSTextField *l = self.strip.contentView.subviews.firstObject;
-    l.attributedStringValue = t;
+    // no unchanged-text early return above: a monitor config change can move or
+    // shrink the strip behind AppKit's back, and place: is the only repair path
+    if (![text isEqualToString:self.stripText]) {
+        self.stripText = text;
+        l.attributedStringValue = t;
+    }
     [self place:self.strip at:frame server:serverFrames()];
     // size the label off the new bounds by hand. Autoresizing only fires when
     // the window actually changes size, and place: leaves it alone whenever the

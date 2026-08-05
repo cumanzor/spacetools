@@ -1,8 +1,8 @@
 # spacetools
 
 Name macOS Spaces, switch to them by name or by pressing a digit in Mission
-Control, and pull an app's windows to the current Space. No SIP changes needed.
-Verified on macOS 26.5.
+Control, create and remove them from the command line, and pull an app's
+windows to the current Space. No SIP changes needed. Verified on macOS 26.5.
 
 ## Commands
 
@@ -13,7 +13,26 @@ spacename set comms  # name the space you are on (empty name clears)
 sw comm              # switch to space by name prefix or number
 bring messages       # move an app's windows to this space and focus it
 send comms           # push the focused window to another space, stay put
+
+spacename create dev      # add a desktop at the end, optionally named
+spacename rm dev          # remove a space; its windows merge to a neighbor
+spacename layout save     # snapshot desktop count and names
+spacename layout restore  # recreate missing desktops, reapply names
 ```
+
+`create` and `rm` drive Mission Control's own UI through Accessibility: the
+add button (`mc.spaces.add`) is a plain AXButton and every space thumbnail
+carries an `AXRemoveDesktop` action, so the Dock performs the change itself
+and stays coherent. Both open Mission Control for about a second and dismiss
+it after. `rm` resolves its argument like `sw` does, refuses fullscreen app
+spaces and the last desktop, and drops the removed space's entry from the
+names file.
+
+`layout restore` recreates desktops until the saved count is reached and
+reapplies names by position. It never removes anything: extra desktops are
+reported and left alone. The snapshot lives in `~/.config/spacelayout.json`.
+Save one after settling on a layout; it is the one-command fix for macOS
+eating your spaces during a display reconfiguration.
 
 `bring` and `send` are opposites. `bring` pulls every window of a named app to
 where you are and focuses it. `send` pushes the one window you are looking at
@@ -106,6 +125,18 @@ Gotchas learned the hard way:
   Decide position against `CGWindowListCopyWindowInfo`, and set an offset rect
   first to force the move through.
 - `CGSSpaceSetName` exists but writes the space UUID field. Do not use it.
+- `SLSSpaceCreate` / `SLSSpaceDestroy` have the same flaw as the bridged
+  switch: the window server obeys and the Dock never hears about it. Create
+  and remove through Mission Control's accessibility tree instead. The Dock
+  exposes `mc` > `mc.display` (one per screen, matched to a display by AX
+  origin against `CGDisplayBounds`) > `mc.spaces` > `mc.spaces.list` plus
+  `mc.spaces.add`, and each thumbnail in the list carries an `AXRemoveDesktop`
+  action, so no hover-for-the-close-button choreography is needed.
+- Under ARC at -O2, the temporary NSArray a helper returns can be freed the
+  moment fast enumeration over it ends. Hold an element you mean to keep as a
+  strong `id` before `CFRetain`ing it, or you retain a dead AXUIElement and CF
+  traps with EXC_BREAKPOINT. Invisible at -O0, which is exactly what makes it
+  nasty.
 
 ## Setup
 
@@ -136,6 +167,10 @@ those apps usually already have it.
 If it ever prints `the Dock ignored the gesture`, grant Accessibility to the
 calling app, or to `~/Applications/SpaceTool.app` if you are running the binary
 directly.
+
+`create`, `rm` and `layout restore` read the Dock's accessibility tree, which
+is gated the same way with the same attribution rules. They print a grant
+message and exit 1 when it is missing.
 
 **LaunchAgent.** `make install-agent` writes the plist (`RunAtLoad` +
 `KeepAlive`) and reloads the daemon with bootout then bootstrap. Never use

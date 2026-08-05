@@ -23,7 +23,17 @@ spacename set comms    # name current space ("" clears)
 sw comm                # switch by name prefix or number
 bring spark            # move app windows here + focus (fuzzy app match)
 send comms             # push the focused window to another space, stay put
+
+spacename create dev      # add a desktop at the end, optionally named
+spacename rm dev          # remove a space (windows merge to a neighbor)
+spacename layout save     # snapshot desktop count + names
+spacename layout restore  # recreate missing desktops, reapply names
 ```
+
+`create` and `rm` open Mission Control for about a second (the Dock does the
+actual work, via its accessibility tree) and need the same Accessibility
+grant story as `sw`. `rm` refuses the last desktop and fullscreen spaces.
+`layout restore` only ever creates and names; extras are left alone.
 
 `bring` pulls a named app's windows to you. `send` pushes the window in front of
 you away. `send` acts on whatever is frontmost, so check what that is before
@@ -77,6 +87,7 @@ the names file and the Accessibility entry.
 | Thing | Path |
 |---|---|
 | names | ~/.config/spacenames.json (keyed by space UUID, survives reboots) |
+| layout snapshot | ~/.config/spacelayout.json (written by `spacename layout save`) |
 | CLIs | ~/.local/bin/{spacename,sw,bring} (shims into SpaceTool.app) |
 | apps | ~/Applications/{SpaceTool,SpaceBadge}.app |
 | Raycast scripts | ~/Documents/scripts/Raycast/{sw,bring,send,name-space,list-spaces}.sh |
@@ -92,7 +103,10 @@ the names file and the Accessibility entry.
 - `1`-`9` does nothing in Mission Control: SpaceBadge lost its Accessibility
   grant. Most likely you rebuilt with adhoc signing, which changes the signature
   every time. Set up `codesign.env` and re-grant once.
-- Names gone: spaces were recreated (UUIDs changed). Re-run `spacename set` per space.
+- Names gone: spaces were recreated (UUIDs changed). `spacename layout restore`
+  if you saved a layout, otherwise re-run `spacename set` per space.
+- macOS collapsed your desktops after a reboot or display change:
+  `spacename layout restore` rebuilds and renames them in one shot.
 - New display or big layout change: badges reposition ~1s after the screen
   settles, and again 2.5s later. If one is stuck offscreen after a dock/undock,
   that observer is the thing that broke.

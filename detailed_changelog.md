@@ -1,3 +1,77 @@
+[2026-08-05 18:30:54 UTC] [spacetool/create, rm, and layout save/restore verbs]
+[Attempt #1]
+[Files Changed]
+- spacetool.m:156-263 - Mission Control automation layer. AX helpers (axAttr/
+  axChildren/axOrigin/axFind/axReady), mcShowing/closeMissionControl, and
+  mcSpacesGroupFor(ident): opens MC if needed, polls for the Dock's mc AX
+  group, and picks the mc.display child whose AX origin matches the display's
+  CGDisplayBounds (the groups carry no identifier of their own).
+- spacetool.m:352-384 - cmdCreate. Presses mc.spaces.add, detects the new
+  space by uuid diff rather than list position, names it in spacenames.json
+  when a name was given.
+- spacetool.m:386-434 - cmdRemove. matchSpace resolution, refuses fullscreen
+  spaces and the last desktop, sanity-checks thumbnail count against the CGS
+  space count before indexing, performs AXRemoveDesktop on the thumbnail at
+  ord-1, verifies the uuid is gone, and drops the map entry.
+- spacetool.m:436-521 - cmdLayoutSave/cmdLayoutRestore against
+  ~/.config/spacelayout.json (display ident -> ordered name array, desktops
+  only). Restore creates until the count matches, then names by position.
+  Never removes; extras reported and left alone.
+- spacetool.m main - create/rm/layout wired in, usage updated.
+- README.md, CHEATSHEET.md - new verbs, AX tree map, gotchas.
+[Why Mission Control UI and not SkyLight]
+SLSSpaceCreate/Destroy exist but only move the window server, the same Dock
+desync the bridged switch had (2026-07-30 18:46:50 entry). The Dock's own
+interface is Mission Control, and its AX tree turned out to be fully wired:
+mc.spaces.add is an ordinary pressable AXButton, and every thumbnail in
+mc.spaces.list advertises an AXRemoveDesktop action, discovered by dumping
+action names. No hover choreography needed; the earlier hunt for a close
+button child was chasing something that never appears in the AX tree.
+[One real bug during bring-up]
+First -O2 build died with EXC_BREAKPOINT (SIGTRAP) inside mcSpacesGroupFor.
+The display-group candidates were held as raw AXUIElementRef into the
+temporary NSArray from axChildren(); ARC freed the array (and elements) the
+moment fast enumeration ended, so the later CFRetain hit a dead object. At
+-O0 the lifetimes stretch and it works, which is what made the -O0 lldb run
+pass. Fix: hold candidates as strong ids, CFBridgingRetain at selection time.
+Recorded in README gotchas.
+[Possible Ripple Effects]
+- create/rm/layout restore open Mission Control for ~1-1.5s and dismiss it
+  with a synthesized escape. SpaceBadge's digit tap is armed during that
+  window but only reacts to bare digits, so the two do not interact.
+- rm on the current space is allowed (the Dock switches you to a neighbor);
+  only tested removing non-current spaces.
+- rm deletes the space's entry from spacenames.json, so recreate-then-rename
+  starts clean instead of resurrecting a stale name.
+- Multi-display: mcSpacesGroupFor matches display groups geometrically. With
+  "Displays have separate Spaces" off (this machine), only the Main block
+  exists and the origin-match hits the menu bar display. The separate-spaces
+  path is wired but unexercised, same status as spaceList's display handling.
+- AXIsProcessTrusted gates all three verbs with an explicit grant message.
+  Under lldb the TCC attribution changes and the check fails; run the bare
+  binary when debugging.
+[Testing Notes]
+All space mutations verified against CGS state and by screenshot, per the
+2026-07-20 rule.
+- create alpha-test, create beta-test: both appeared at the expected ords with
+  names in list and map (spaces 100/104, later 116/117 after the rm/restore
+  cycle).
+- layout save wrote {"Main": ["comms","alpha-test","beta-test"]}.
+- rm alpha-test + rm beta-test: back to one space, map clean (grep -c test =
+  0).
+- layout restore: recreated 2 desktops, applied 3 names; screenshot of MC
+  shows Desktop 1/2/3 with real thumbnails, correct highlight, and the
+  SpaceBadge strip reading "1 comms  2 alpha-test  3 beta-test", which also
+  proves the daemon picked the restored names up on its own (~2s mtime poll).
+- Error paths: rm comms with one desktop -> "refusing to remove the last
+  desktop", rm nosuchspace -> no match (both exit 1); layout restore with the
+  layout already satisfied -> "0 desktops created, 1 name applied", exit 0.
+- Cleanup verified: final state one space (comms), layout file re-saved to
+  match, Mission Control confirmed closed.
+- Not tested: rm of the current space, fullscreen spaces in the bar during
+  rm (the thumbnail-count guard covers the indexing risk), separate-spaces
+  mode.
+
 [2026-08-05 17:49:09 UTC] [SpaceBadge/MC strip stays displaced after a monitor config change]
 [Attempt #1]
 [Files Changed]

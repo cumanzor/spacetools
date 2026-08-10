@@ -218,7 +218,7 @@ state - so once the window server displaced the strip during a monitor config
 change, nothing ever repaired it. The badges were fine because their repair
 lives in sync(), which has no such short circuit. Probe on the live daemon
 showed the strip at CG 0,0 (layer 3, under the Dock's layer-18 MC chrome),
-matching Carlos's screenshot of it dimmed behind the desktop thumbnails.
+matching the reported screenshot of it dimmed behind the desktop thumbnails.
 [Possible Ripple Effects]
 - showStrip now calls serverFrames() (a full CGWindowList pass filtered to our
   pid) every 300ms while MC is open, on top of the CGS and JSON reads it already
@@ -240,7 +240,7 @@ matching Carlos's screenshot of it dimmed behind the desktop thumbnails.
   correct live render.
 - Found while verifying, not caused by the fix: CGS reports a single space.
   com.apple.spaces.plist was rewritten at 11:39:04 local, one minute after
-  Carlos's screenshot still showed 7 desktops (with black previews), and none
+  a screenshot still showed 7 desktops (with black previews), and none
   of the named-space uuids survive in it - macOS consolidated the spaces during
   a display reconfiguration right after boot. The strip rendering "1 comms" is
   correct for that state. The spacenames.json map keeps the dead uuids, so
@@ -546,12 +546,13 @@ screen. Reproduced on every attempt with a single-process harness, so it is not
 a race with the escape or with process spawning.
 Repair attempts that did not work: posting escape after the switch, killall Dock
 (twice), activating another app, plain `sw` space switches, a clean MC open and
-close cycle. What does clear it is a real user-driven space switch, per Carlos.
+close cycle. What does clear it is a real user-driven space switch, confirmed by
+hand.
 [Testing Notes / process failure]
 The first round of testing passed 6 for 6 and was worthless. It probed
 CGWindowList and `spacename` and never looked at the screen, so it could not see
 that every one of those runs was corrupting the session. The corruption was only
-found when Carlos reported it and a screenshot was taken. Anything that changes
+found when it was reported and a screenshot was taken. Anything that changes
 what the compositor draws has to be verified with a screenshot, not an API read.
 A second wrong inference came from the same gap: the README claimed a bridged
 switch dismisses MC and that `sw` only appears to because spawning a process

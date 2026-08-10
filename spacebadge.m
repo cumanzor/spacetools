@@ -376,7 +376,11 @@ int main() {
     [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) { [b tick]; }];
     [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *t) { [b maybeResync]; }];
     [NSTimer scheduledTimerWithTimeInterval:15.0 repeats:YES block:^(NSTimer *t) { [b sync]; }];
-    [[NSRunLoop currentRunLoop] run];
+    // NSApp run, not NSRunLoop run: AppKit only refreshes NSScreen and posts
+    // DidChangeScreenParameters while it drains its own event queue. Under a bare
+    // runloop every screen value stays frozen at whatever the displays looked
+    // like when the agent launched, which at login is mid-settle.
+    [NSApp run];
   }
   return 0;
 }

@@ -1,3 +1,69 @@
+[2026-08-10 18:50:35 UTC] [SpaceBadge/Stale NSScreen: the daemon never saw a display change]
+[Attempt #3 - the two earlier strip-placement fixes were treating symptoms]
+[Files Changed]
+- spacebadge.m:379 - main ends with [NSApp run] instead of
+  [[NSRunLoop currentRunLoop] run].
+[Root cause]
+AppKit only refreshes its NSScreen array, and only posts
+NSApplicationDidChangeScreenParametersNotification, while it drains its own
+event queue. A bare NSRunLoop services timers and mach ports but never
+dequeues those events, so every screen value the process ever reads is the
+one sampled at launch.
+
+The daemon is a RunAtLoad LaunchAgent, so it launches while the displays are
+still coming up. Caught in the act with lldb against the running pid: the
+daemon believed in two displays, the main one 2304x1296, while the machine
+actually had three and the main one was 2560x1440. It had been holding the
+transient login-time configuration all day.
+
+Everything positional is derived from those numbers, so the strip's target
+frame was computed against a screen that no longer existed, and the CG->Cocoa
+flip in serverFrames() used the wrong primary height on top of that. The
+window ended up parked at CG 0,0, clipped under the Mission Control chrome in
+the top-left corner. screensChanged never ran either, so the debounced resync
+added in the 2026-07-30 entry could never fire on this machine.
+
+This is why the two previous strip fixes did not hold. Both repaired the
+window against a stale target: 3ce898d rebuilt the strip on every poll,
+e1e94b2 dropped the unchanged-text early return so place: always ran. Neither
+is wrong, and both stay, but a correct repair aimed at a coordinate space that
+had not existed since login could only ever move the window to the wrong spot.
+[Ruling out the obvious suspect first]
+place: itself was the prime suspect, since it is the repair path. A harness
+built the same borderless overlay, displaced it behind AppKit's back with
+SLSMoveWindow to CG 0,0, and ran place: verbatim: server bounds went from
+0,1394 straight back to 1048,1256. place: works. The target was the problem.
+[Proving the mechanism]
+A/B probe, two identical accessory apps differing only in the final loop,
+running at the same time while the menu bar visibleFrame was changed under
+them. NSRunLoop: no notification, screens pinned at 2560x1410 across all
+fourteen polls. NSApp: notification on both edges, screens updated to
+2560x1320 and back within the same second. Nothing else about the two
+processes differs.
+[Possible Ripple Effects]
+- NSApp run calls finishLaunching a second time. Nothing observes
+  NSApplicationDidFinishLaunching here, so it is inert.
+- The process now processes AppKit events it previously ignored. Activation
+  policy is still Accessory, so no menu bar and no Dock tile.
+- Timers, the NSWorkspace active-space observer and the CGEventTap source all
+  run on the main runloop, which NSApp run pumps. All unaffected, verified
+  live: the 1-9 tap and the strip refresh both still work.
+- screensChanged now actually fires, so its 1.0s debounce plus 2.5s follow-up
+  sync runs for real for the first time. That path was written in July and has
+  never executed on this machine.
+[Testing Notes]
+Before, running daemon, Mission Control held open: strip window pinned at CG
+0,0 465x46, alpha tracking MC correctly, position never moving across a 9
+second poll. Target should have been CG 996,138.
+After rebuild and agent reload: strip lands at CG 996,138 568x46 on MC open,
+matching the independently computed frame exactly.
+End-to-end, live daemon: toggled the menu bar autohide and watched the badge
+windows, which anchor to NSMaxY(visibleFrame). Menu bar shown CG y=44, hidden
+y=14, restored y=44, the exact 30pt delta, each within the debounce window.
+Before the fix that notification never arrived at all.
+Dock autohide, Dock edge and menu bar autohide all returned to their original
+values afterwards.
+
 [2026-08-05 19:02:07 UTC] [spacetool/Bare-number queries beat digit-containing names]
 [Attempt #1]
 [Files Changed]

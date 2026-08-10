@@ -1,3 +1,40 @@
+[2026-08-10 19:03:53 UTC] [build/install-agent races launchd's teardown]
+[Attempt #1]
+[Files Changed]
+- Makefile:4-5 - LABEL variable, AGENT derived from it. The label appeared in
+  four places and the new recipe needs it three more times.
+- Makefile:56-59 - comment records the race alongside the existing cdhash note.
+- Makefile:71-86 - install-agent polls launchctl print until the label is gone
+  from the domain, up to 5s, then bootstraps with up to five retries. The last
+  retry runs under exec so launchctl's own error text and exit status reach
+  make instead of being swallowed by the 2>/dev/null the retries need.
+- Makefile:89 - uninstall uses $(LABEL).
+[Root cause]
+launchctl bootout returns as soon as the request is accepted, not when the job
+is actually gone. With KeepAlive set the daemon takes a beat to die, and the
+bootstrap on the next line lands while the label is still registered, so
+launchd answers EIO: "Bootstrap failed: 5: Input/output error". Hit it live
+while installing the NSApp run fix; the manual retry a second later worked,
+which is the tell.
+[Possible Ripple Effects]
+- Cold install, where nothing is loaded, is unchanged in effect: bootout fails
+  into the || true, the first launchctl print fails, the wait loop never runs.
+  Tested separately since that path is what a new machine takes.
+- A genuinely wedged service now fails the target with a clear message after
+  5s instead of failing on the bootstrap line with EIO.
+- uninstall keeps its bare bootout. Nothing follows it there, so it has no
+  race to lose.
+[Testing Notes]
+Three back to back `make install-agent` runs over a live agent, all exit 0,
+new pid each time (38239, 38357, 38475). The same sequence produced EIO on the
+first run before the change.
+Cold path: manual bootout, confirmed nothing loaded, `make install-agent`
+exits 0 and the agent comes up (39054).
+plutil -lint still passes and the generated plist carries the right Label
+after the $(LABEL) substitution.
+Daemon verified working after the reload churn: strip lands at CG 996,138
+568x46 on Mission Control open, alpha tracking MC.
+
 [2026-08-10 18:50:35 UTC] [SpaceBadge/Stale NSScreen: the daemon never saw a display change]
 [Attempt #3 - the two earlier strip-placement fixes were treating symptoms]
 [Files Changed]

@@ -1,7 +1,8 @@
 CFLAGS = -fobjc-arc -O2 -Wno-deprecated-declarations
 APPS = $(HOME)/Applications
 BIN = $(HOME)/.local/bin
-AGENT = $(HOME)/Library/LaunchAgents/dev.umanzor.spacebadge.plist
+LABEL = dev.umanzor.spacebadge
+AGENT = $(HOME)/Library/LaunchAgents/$(LABEL).plist
 
 all: spacetool spacebadge
 
@@ -53,14 +54,16 @@ install: all
 	chmod +x $(BIN)/spacename $(BIN)/sw $(BIN)/bring $(BIN)/send
 
 # bootout before bootstrap, never kickstart: launchd caches the old cdhash and
-# kickstart dies with OS_REASON_CODESIGNING once the signature changes
+# kickstart dies with OS_REASON_CODESIGNING once the signature changes.
+# bootout returns before the service leaves the domain, so bootstrapping straight
+# after it races the teardown and fails with EIO. Wait for the label to go.
 install-agent: install
 	mkdir -p $(dir $(AGENT))
 	printf '%s\n' \
 	  '<?xml version="1.0" encoding="UTF-8"?>' \
 	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
 	  '<plist version="1.0"><dict>' \
-	  '<key>Label</key><string>dev.umanzor.spacebadge</string>' \
+	  '<key>Label</key><string>$(LABEL)</string>' \
 	  '<key>ProgramArguments</key><array>' \
 	  '<string>$(APPS)/SpaceBadge.app/Contents/MacOS/SpaceBadge</string>' \
 	  '</array>' \
@@ -68,12 +71,27 @@ install-agent: install
 	  '<key>KeepAlive</key><true/>' \
 	  '</dict></plist>' > $(AGENT)
 	plutil -lint $(AGENT)
-	-launchctl bootout gui/$$(id -u)/dev.umanzor.spacebadge 2>/dev/null
-	launchctl bootstrap gui/$$(id -u) $(AGENT)
+	@set -e; \
+	D=gui/$$(id -u); \
+	launchctl bootout $$D/$(LABEL) 2>/dev/null || true; \
+	n=0; \
+	while launchctl print $$D/$(LABEL) >/dev/null 2>&1; do \
+	  n=$$((n + 1)); \
+	  if [ $$n -ge 50 ]; then \
+	    echo "fatal: $(LABEL) still loaded 5s after bootout" >&2; exit 1; \
+	  fi; \
+	  sleep 0.1; \
+	done; \
+	n=0; \
+	while ! launchctl bootstrap $$D $(AGENT) 2>/dev/null; do \
+	  n=$$((n + 1)); \
+	  if [ $$n -ge 5 ]; then exec launchctl bootstrap $$D $(AGENT); fi; \
+	  sleep 0.3; \
+	done
 	@echo "  agent loaded. 1-9 inside Mission Control needs Accessibility for SpaceBadge."
 
 uninstall:
-	-launchctl bootout gui/$$(id -u)/dev.umanzor.spacebadge 2>/dev/null
+	-launchctl bootout gui/$$(id -u)/$(LABEL) 2>/dev/null
 	rm -f $(AGENT)
 	rm -rf $(APPS)/SpaceTool.app $(APPS)/SpaceBadge.app
 	rm -f $(BIN)/spacename $(BIN)/sw $(BIN)/bring $(BIN)/send

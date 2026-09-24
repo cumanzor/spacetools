@@ -1,3 +1,58 @@
+[2026-09-24 22:02:41 UTC] [docs/Verified: no managed space creation without Mission Control on macOS 27 with SIP on]
+[Attempt #1]
+[Files Changed]
+- docs/space-creation-without-mission-control.md - new. Full write-up of the
+  investigation that verified the handoff's "not possible with SIP on" claim:
+  Shortcuts/App Intents sweep, entitlement landscape, live XPC probes of the
+  three WindowManager Mach services, dyld-cache extraction of WindowManager
+  .framework, disassembly of the admin XPC create/destroy gates, rejected
+  avenues (spaces.plist seeding, virtual displays, fullscreen spaces), the
+  SIP per-binary question, and a WindowServer/WindowManager internals
+  reference (service topology, MC UI layers on 27, admin protocol operation
+  list, spaces plist structure and persistence classes, CGS surface,
+  entitlement map, dyld cache layout). Probe source and regeneration steps
+  are inlined as appendices so nothing depends on the session scratchpad.
+- simple_changelog.md, detailed_changelog.md - this entry.
+[Findings]
+- Shortcuts: the only desktop/space actions on the entire system volume are
+  Settings preference toggles and the Show Desktop trigger (all 1393
+  extract.actionsdata files scanned; WindowManagerControlsExtension.appex
+  ships exactly 7 trigger/toggle intents). System Events' desktop class is
+  read-only wallpaper properties; make new desktop errors -10000.
+- Entitlements: exactly one on-disk binary holds
+  com.apple.private.windowmanager.spacemanagement (WindowManagerControls
+  Extension.appex, sandboxed, no scriptable surface beyond the 7 intents).
+  Dock holds only the base com.apple.private.windowmanager. No confused
+  deputy exists.
+- XPC: com.apple.WindowManager.agent registers .server / .external /
+  .dragserver. Live probe: .external cancels after first message (matches the
+  handoff stub), .server replies {"bsxpc": "invalidate"} then cancels (it is
+  the BaseBoard-coded admin protocol, AdminXPCListener/Connection), .drag
+  server ignores garbage.
+- Disassembly (framework extracted via dsc_extractor.bundle, symbol renamed
+  to dyld_shared_cache_extract_dylibs_progress): the admin handlers
+  adminXPCConnectionRequestsCreateManagedSpace (check call 0x2a5eb0ac4) and
+  requestsDestroySpace (0x2a5eb0d88) call the entitlement check
+  (0x2a5ea56b0) with spacemanagement at handler entry; failure builds
+  AdminXPCConnectionError. The check resolves valueForEntitlement: on the
+  connection from the peer's audit token, so the message payload cannot
+  spoof it. Both alternate services are therefore closed by the same
+  entitlement as .external.
+- CGS: no managed-create client export exists (CGSSpaceCreate is the only
+  create, and the server hands back type 3 unmanaged). CGSMoveManagedSpace
+  ToDisplayIndex moves spaces between displays but creates nothing.
+- SIP: no per-binary exemption mechanism exists (partial csrutil flags are
+  global; provisioning profiles don't carry com.apple.private.*).
+[Possible Ripple Effects]
+- None on code; no binaries changed. The doc records vmaddrs/symbols from
+  build 26A428 only.
+[Testing Notes]
+- XPC probe run live against all three services plus a bogus-name control;
+  results table in the doc. Disassembly cross-referenced by entitlement
+  string address (0x2a5f0b440), check-helper call sites, and handler log
+  strings. codesign.env re-audited during this work: untracked, ignored at
+  .gitignore:4, zero objects/commits/stashes in any ref, values not
+  hardcoded anywhere in the tree.
 [2026-09-24 21:12:44 UTC] [spacetool/Faster Mission Control round trip for create, rm, layout restore]
 [Attempt #1]
 [Files Changed]

@@ -94,12 +94,18 @@ static NSAttributedString *badgeText(NSString *name, CGFloat size) {
 }
 
 
+// macOS 26 and earlier: a Dock window at layer 18. macOS 27 moved Mission
+// Control into WindowManager, which puts layer 19 shield windows up while open.
 static BOOL mcOpen(void) {
     NSArray *list = CFBridgingRelease(CGWindowListCopyWindowInfo(
         kCGWindowListOptionOnScreenOnly, kCGNullWindowID));
-    for (NSDictionary *w in list)
-        if ([w[(id)kCGWindowOwnerName] isEqual:@"Dock"] && [w[(id)kCGWindowLayer] intValue] == 18)
+    for (NSDictionary *w in list) {
+        NSString *owner = w[(id)kCGWindowOwnerName];
+        int layer = [w[(id)kCGWindowLayer] intValue];
+        if (([owner isEqual:@"Dock"] && layer == 18) ||
+            ([owner isEqual:@"WindowManager"] && layer == 19))
             return YES;
+    }
     return NO;
 }
 

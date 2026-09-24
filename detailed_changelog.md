@@ -1,3 +1,80 @@
+[2026-09-24 20:43:46 UTC] [spacetool/sw ignored on macOS 27]
+[Attempt #1]
+[Files Changed]
+- spacetool.m:7 - imports mach/mach_time.h.
+- spacetool.m:108-178 - new postSwipePhase27() and postDockSwipe27(). Each
+  phase builds the dock control CGEvent, serializes it with CGEventCreateData,
+  appends a 4-byte tag (payload length, field 4205) and an IOHID system queue
+  element (fluid touch gesture type 23, flavor 3, plus a velocity event on the
+  ended phase), then rebuilds it with CGEventCreateFromData and posts it.
+  Began/changed/ended go out 10ms apart. Refuses anything that isn't
+  serialization format v2.
+- spacetool.m switchToSpace - on majorVersion >= 27, posts one augmented swipe
+  per step at 2000 * steps velocity. The old two-phase 9999-velocity gesture
+  still runs on 26 and earlier.
+[Root cause]
+On 27 the Dock only honors a synthetic swipe that carries the raw IOHID
+payload. The public gesture fields alone get dropped, so sw posted, waited 2s,
+and printed the Accessibility hint, which was wrong this time. yabai's
+SIP-enabled switching broke the same way (asmvik/yabai#2822). The working
+recipe comes from jurplel/InstantSpaceSwitcher's macos-27 branch plus its PR
+#88 (phase pacing), MIT. Mac Mouse Fix PR #1920 reaches the same conclusion by
+attaching the event with SLEventSetIOHIDEvent instead.
+[Possible Ripple Effects]
+- SpaceBadge's 1-9 keys in Mission Control call `SpaceTool switch N`, so they
+  were broken by the same thing and are fixed by this.
+- Format v2 check: if a later macOS changes the CGEvent serialization, sw fails
+  fast with "could not build the swipe event" instead of posting garbage.
+- The sign flip on progress/velocity only applies to the 27 path, matching ISS.
+[Testing Notes]
+A standalone prototype first: +1, -1 and a +2 jump all landed correctly.
+After porting, `spacetool switch` 3, 1, 3, personal all exit 0 and land on the
+right space, 2-step jumps included. The 1-9 keys inside Mission Control were
+confirmed by hand by the user. Synthetic key posts from a test harness were
+unreliable for this and aren't a valid check.
+
+[2026-09-24 20:35:58 UTC] [spacetool+SpaceBadge/macOS 27 moved Mission Control out of the Dock]
+[Attempt #1]
+[Files Changed]
+- spacebadge.m:97-110 - mcOpen() returns true for a Dock window at layer 18
+  (macOS 26 and earlier) or a WindowManager window at layer 19 (macOS 27).
+- spacetool.m:203-216 - mcShowing() gets the same two-way check.
+- spacetool.m:225-240 - new mcDisplayGroups() collects mc.display groups from
+  the WindowManager app's direct children and from the Dock's "mc" group, so
+  the old path still works on older macOS versions.
+- spacetool.m:245-277 - mcSpacesGroupFor() creates AX elements for both
+  com.apple.dock and com.apple.WindowManager and matches displays across the
+  merged list. The display-origin matching and the fallback to the first
+  display are unchanged.
+[Root cause]
+On macOS 27 (26A428) the Mission Control overlay is drawn by
+/System/Library/CoreServices/WindowManager.app. While MC is open the window
+server shows WindowManager windows at layer 19 (ExposeShieldWindow, one per
+display), layer 14 (the 96pt spaces bar) and a Dock window at layer 20. No
+Dock window at layer 18 appears anymore, so mcOpen()/mcShowing() always
+returned false: SpaceBadge never raised its strip or armed the 1-9 tap, and
+spacetool opened MC and then waited for a Dock window that never showed up.
+The Dock app still exposes an AXGroup id=mc, but it has no children. The
+mc.display > mc.spaces > mc.spaces.list / mc.spaces.add tree is the same as
+before, just parented under the WindowManager AXApplication. The thumbnails
+still carry AXRemoveDesktop.
+[Possible Ripple Effects]
+- Layer 19 WindowManager windows may also appear for App Expose. The old Dock
+  layer 18 check had the same exposure, so there is no change there.
+- On macOS 27 the mc.display AX origin reads 0,0. With "Displays have separate
+  Spaces" off there is only one mc.display group, so it matches the main
+  display. With separate Spaces on, non-main displays probably fall back to
+  the first group after 3s. Untested with that setting on 27.
+- The strip still sits 158pt from the top. On 27 it overlaps the top of the
+  window thumbnails a little, but it reads fine.
+[Testing Notes]
+Probed the window list and AX tree before, during and after opening MC.
+Escape still closes MC on 27.
+After `make install-agent`, opening MC shows the strip ("1 · 2 personal 3 ·");
+confirmed by screenshot.
+`spacetool create zz-probe` then `spacetool rm zz-probe` both exit 0, run twice.
+The desktop list is back to its original three spaces.
+
 [2026-08-10 19:03:53 UTC] [build/install-agent races launchd's teardown]
 [Attempt #1]
 [Files Changed]

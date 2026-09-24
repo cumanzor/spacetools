@@ -4,6 +4,7 @@
 #import <Cocoa/Cocoa.h>
 #import <objc/message.h>
 #import <dlfcn.h>
+#import <mach/mach_time.h>
 
 typedef int (*ConnFn)(void);
 typedef CFArrayRef (*MDSFn)(int);
@@ -103,6 +104,84 @@ static CGDirectDisplayID displayIDForIdent(NSString *ident) {
     return CGMainDisplayID();
 }
 
+// macOS 27 ignores a dock swipe carrying only the CGEvent gesture fields; it
+// wants the raw IOHID fluid-touch payload too, appended to the serialized event
+// as field 4205. Layout, signs and 10ms phase pacing are InstantSpaceSwitcher's
+// (MIT), from its macos-27 branch: Sources/ISS/event_serialize.c and ISS.c.
+#pragma pack(push, 1)
+typedef struct { uint32_t size, type, options; uint8_t depth, reserved[3]; } HIDBase;
+typedef struct { HIDBase base; int32_t px, py, pz; uint32_t mask; uint16_t motion, flavor; int32_t progress; } HIDFluid;
+typedef struct { HIDBase base; int32_t vx, vy, vz; } HIDVelocity;
+typedef struct { uint64_t ts, sender; uint32_t options, attrLen, count; } HIDHeader;
+#pragma pack(pop)
+
+static int32_t fixed1616(double v) {
+    int32_t f = (int32_t)(v * 65536.0);
+    return (f == 0 && v != 0) ? (v > 0 ? 1 : -1) : f;
+}
+
+static BOOL postSwipePhase27(int phase, int dir, double speed) {
+    double progress = dir > 0 ? -0.000016 : 0.000016;
+    double vel = dir > 0 ? -speed : speed;
+    BOOL ended = phase == 4;
+    CGEventRef e = CGEventCreate(NULL);
+    if (!e) return NO;
+    CGEventSetIntegerValueField(e, 55, 30);      // gesture event
+    CGEventSetIntegerValueField(e, 110, 23);     // subtype: dock control
+    CGEventSetIntegerValueField(e, 123, 1);      // horizontal
+    CGEventSetDoubleValueField(e, 124, progress);
+    CGEventSetDoubleValueField(e, 125, 0.1);
+    CGEventSetIntegerValueField(e, 132, phase);
+    CGEventSetIntegerValueField(e, 134, phase);
+    CGEventSetDoubleValueField(e, 138, 3.0);
+    CGEventSetDoubleValueField(e, 169, (double)mach_absolute_time());
+    if (ended) CGEventSetDoubleValueField(e, 129, vel);
+
+    size_t plen = sizeof(HIDHeader) + sizeof(HIDFluid) + (ended ? sizeof(HIDVelocity) : 0);
+    NSMutableData *payload = [NSMutableData dataWithLength:plen];
+    uint8_t *p = payload.mutableBytes;
+    HIDHeader *h = (HIDHeader *)p;
+    h->ts = mach_absolute_time();
+    h->count = ended ? 2 : 1;
+    HIDFluid *f = (HIDFluid *)(p + sizeof *h);
+    f->base.size = sizeof *f;
+    f->base.type = 23;                           // fluid touch gesture
+    f->base.options = (uint32_t)(phase & 0xff) << 24;
+    f->px = fixed1616(0.1);
+    f->motion = 1;
+    f->flavor = 3;                               // dock primary
+    f->progress = fixed1616(progress);
+    if (ended) {
+        HIDVelocity *v = (HIDVelocity *)(p + sizeof *h + sizeof *f);
+        v->base.size = sizeof *v;
+        v->base.type = 9;
+        v->base.depth = 1;
+        v->vx = fixed1616(vel);
+    }
+
+    NSMutableData *raw = [CFBridgingRelease(CGEventCreateData(NULL, e)) mutableCopy];
+    CFRelease(e);
+    const uint8_t *rb = raw.bytes;
+    if (raw.length < 4 || rb[0] || rb[1] || rb[2] || rb[3] != 2) return NO;   // format v2 only
+    uint8_t tag[4] = { (plen >> 8) & 0xff, plen & 0xff, (4205 >> 8) & 0xff, 4205 & 0xff };
+    [raw appendBytes:tag length:4];
+    [raw appendData:payload];
+    CGEventRef a = CGEventCreateFromData(NULL, (__bridge CFDataRef)raw);
+    if (!a) return NO;
+    CGEventPost(kCGSessionEventTap, a);
+    CFRelease(a);
+    return YES;
+}
+
+// the Dock drops phases posted back to back on 27
+static BOOL postDockSwipe27(int dir, double speed) {
+    if (!postSwipePhase27(1, dir, speed)) return NO;
+    usleep(10000);
+    if (!postSwipePhase27(2, dir, speed)) return NO;
+    usleep(10000);
+    return postSwipePhase27(4, dir, speed);
+}
+
 // Setting the current space through SkyLight only moves the window server. The
 // Dock keeps its own index and nothing in the bridge tells it otherwise, so
 // Mission Control keeps drawing the space you left and ctrl-arrow counts from
@@ -121,21 +200,27 @@ static int switchToSpace(NSDictionary *s) {
     if (![ident isEqualToString:currentSpaceInfo()[@"display"]])
         CGWarpMouseCursorPosition(CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b)));
 
-    CGEventRef e = CGEventCreate(NULL);
-    if (!e) { fprintf(stderr, "sw: CGEventCreate failed\n"); return 1; }
-    double sign = delta > 0 ? 1.0 : -1.0;
-    CGEventSetIntegerValueField(e, 55, 30);      // gesture event
-    CGEventSetIntegerValueField(e, 110, 23);     // subtype: dock control
-    CGEventSetIntegerValueField(e, 123, 1);
-    CGEventSetDoubleValueField(e, 124, sign);
-    CGEventSetDoubleValueField(e, 129, sign * 9999.0);
-    for (int i = 0, n = abs(delta); i < n; i++) {
-        CGEventSetIntegerValueField(e, 132, 1);  // phase: began
-        CGEventPost(kCGSessionEventTap, e);
-        CGEventSetIntegerValueField(e, 132, 4);  // phase: ended
-        CGEventPost(kCGSessionEventTap, e);
+    if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27) {
+        int dir = delta > 0 ? 1 : -1, n = abs(delta);
+        for (int i = 0; i < n; i++)
+            if (!postDockSwipe27(dir, 2000.0 * n)) { fprintf(stderr, "sw: could not build the swipe event\n"); return 1; }
+    } else {
+        CGEventRef e = CGEventCreate(NULL);
+        if (!e) { fprintf(stderr, "sw: CGEventCreate failed\n"); return 1; }
+        double sign = delta > 0 ? 1.0 : -1.0;
+        CGEventSetIntegerValueField(e, 55, 30);      // gesture event
+        CGEventSetIntegerValueField(e, 110, 23);     // subtype: dock control
+        CGEventSetIntegerValueField(e, 123, 1);
+        CGEventSetDoubleValueField(e, 124, sign);
+        CGEventSetDoubleValueField(e, 129, sign * 9999.0);
+        for (int i = 0, n = abs(delta); i < n; i++) {
+            CGEventSetIntegerValueField(e, 132, 1);  // phase: began
+            CGEventPost(kCGSessionEventTap, e);
+            CGEventSetIntegerValueField(e, 132, 4);  // phase: ended
+            CGEventPost(kCGSessionEventTap, e);
+        }
+        CFRelease(e);
     }
-    CFRelease(e);
 
     for (int i = 0; i < 40; i++) {               // settle, then confirm it took
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
@@ -200,12 +285,18 @@ static BOOL axReady(const char *verb) {
 static void settle(double s) {
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:s]];
 }
+// macOS 26 and earlier: a Dock window at layer 18. macOS 27 moved Mission
+// Control into WindowManager, which puts layer 19 shield windows up while open.
 static BOOL mcShowing(void) {
     NSArray *list = CFBridgingRelease(CGWindowListCopyWindowInfo(
         kCGWindowListOptionOnScreenOnly, kCGNullWindowID));
-    for (NSDictionary *w in list)
-        if ([w[(id)kCGWindowOwnerName] isEqual:@"Dock"] && [w[(id)kCGWindowLayer] intValue] == 18)
+    for (NSDictionary *w in list) {
+        NSString *owner = w[(id)kCGWindowOwnerName];
+        int layer = [w[(id)kCGWindowLayer] intValue];
+        if (([owner isEqual:@"Dock"] && layer == 18) ||
+            ([owner isEqual:@"WindowManager"] && layer == 19))
             return YES;
+    }
     return NO;
 }
 static void closeMissionControl(void) {
@@ -216,14 +307,32 @@ static void closeMissionControl(void) {
     for (int i = 0; i < 20 && mcShowing(); i++) settle(0.1);
 }
 
+// mc.display groups: children of Dock's "mc" group up to macOS 26, direct
+// children of the WindowManager app from macOS 27
+static NSArray *mcDisplayGroups(AXUIElementRef dock, AXUIElementRef wm) {
+    NSMutableArray *out = [NSMutableArray array];
+    NSMutableArray *parents = [NSMutableArray array];
+    if (wm) [parents addObject:(__bridge id)wm];
+    AXUIElementRef mc = dock ? axFind(dock, @"mc", 3) : NULL;
+    if (mc) [parents addObject:CFBridgingRelease(mc)];
+    for (id p in parents)
+        for (id k in axChildren((__bridge AXUIElementRef)p))
+            if ([axAttr((__bridge AXUIElementRef)k, kAXIdentifierAttribute) isEqualToString:@"mc.display"])
+                [out addObject:k];
+    return out;
+}
+
 // opens MC if needed and returns the retained mc.spaces group for a display.
 // mc.display groups carry no identifier, so match their AX origin (global
 // top-left coords) against the display's CGDisplayBounds.
 static AXUIElementRef mcSpacesGroupFor(NSString *ident) {
-    NSRunningApplication *dock = [NSRunningApplication
+    NSRunningApplication *dockApp = [NSRunningApplication
         runningApplicationsWithBundleIdentifier:@"com.apple.dock"].firstObject;
-    if (!dock) return NULL;
-    AXUIElementRef app = AXUIElementCreateApplication(dock.processIdentifier);
+    NSRunningApplication *wmApp = [NSRunningApplication
+        runningApplicationsWithBundleIdentifier:@"com.apple.WindowManager"].firstObject;
+    if (!dockApp && !wmApp) return NULL;
+    AXUIElementRef dock = dockApp ? AXUIElementCreateApplication(dockApp.processIdentifier) : NULL;
+    AXUIElementRef wm = wmApp ? AXUIElementCreateApplication(wmApp.processIdentifier) : NULL;
     CGPoint want = CGDisplayBounds(displayIDForIdent(ident)).origin;
     if (!mcShowing())
         [[NSWorkspace sharedWorkspace] openApplicationAtURL:[NSURL fileURLWithPath:
@@ -232,24 +341,20 @@ static AXUIElementRef mcSpacesGroupFor(NSString *ident) {
     AXUIElementRef group = NULL;
     for (int i = 0; i < 30 && !group; i++) {
         settle(0.1);
-        AXUIElementRef mc = axFind(app, @"mc", 3);
-        if (!mc) continue;
         // strong ids, not raw AXUIElementRefs: the children array is a
         // temporary and ARC may free it (and its elements) right after the
         // enumeration under -O2
         id match = nil, first = nil;
-        for (id k in axChildren(mc)) {
-            AXUIElementRef g = (__bridge AXUIElementRef)k;
-            if (![axAttr(g, kAXIdentifierAttribute) isEqualToString:@"mc.display"]) continue;
+        for (id k in mcDisplayGroups(dock, wm)) {
             if (!first) first = k;
-            CGPoint p = axOrigin(g);
+            CGPoint p = axOrigin((__bridge AXUIElementRef)k);
             if (fabs(p.x - want.x) < 2 && fabs(p.y - want.y) < 2) { match = k; break; }
         }
         if (!match && i == 29) match = first;   // display moved mid-open, take the menu bar one
         if (match) group = (AXUIElementRef)CFBridgingRetain(match);
-        CFRelease(mc);
     }
-    CFRelease(app);
+    if (dock) CFRelease(dock);
+    if (wm) CFRelease(wm);
     if (!group) return NULL;
     settle(0.35);   // let the bar finish laying out
     AXUIElementRef spaces = axFind(group, @"mc.spaces", 2);

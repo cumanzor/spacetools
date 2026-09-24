@@ -1,3 +1,34 @@
+[2026-09-24 21:12:44 UTC] [spacetool/Faster Mission Control round trip for create, rm, layout restore]
+[Attempt #1]
+[Files Changed]
+- spacetool.m waitUntil() - new: polls a block every 20ms until it's true or
+  the timeout passes. atLeastMacOS27() wraps the OS version check.
+- spacetool.m closeMissionControl() - waits for MC to go away via waitUntil (2s).
+- spacetool.m mcSpacesGroupFor() - display group lookup polls at 20ms (3s
+  cap, same fallback to the first group). The settle(0.35) only runs before
+  27. On 27 it waits until mc.spaces.add exists instead.
+- spacetool.m cmdCreate / cmdRemove / cmdLayoutRestore - the new-space and
+  space-gone waits use waitUntil (3s). rm also waits up to 1s for the
+  thumbnail count to match the space count before its sanity check, since
+  it now reaches the list earlier.
+[Root cause]
+Phase timing on 27 at 10ms polling: + is available 70ms after opening MC,
+and the space shows up in CGSCopyManagedDisplaySpaces 24ms after the press.
+The fixed 350ms settle plus 100ms polling steps made up most of the old
+~1.15s. The ~330ms MC close animation after Escape is the floor.
+Creating a space without MC isn't possible with SIP on (WindowManager's
+create API needs com.apple.private.windowmanager.spacemanagement). Details in
+the handoff note on the Desktop.
+[Possible Ripple Effects]
+- 26 and earlier keep the 350ms settle, so behavior there is unchanged apart
+  from finer polling.
+- Timeouts are the same as before (3s for group/space waits, 2s for MC close).
+[Testing Notes]
+Five create/rm rounds with a throwaway space: create 0.59-0.80s, rm
+0.54-0.69s, all succeeded, including process launch. The space list was back
+to the original three afterwards. layout restore wasn't run (it would add
+desktops), but it shares mcSpacesGroupFor and the same wait helper.
+
 [2026-09-24 20:43:46 UTC] [spacetool/sw ignored on macOS 27]
 [Attempt #1]
 [Files Changed]

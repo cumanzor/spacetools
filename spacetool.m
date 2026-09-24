@@ -285,6 +285,15 @@ static BOOL axReady(const char *verb) {
 static void settle(double s) {
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:s]];
 }
+static BOOL waitUntil(double timeout, BOOL (^done)(void)) {
+    for (NSDate *end = [NSDate dateWithTimeIntervalSinceNow:timeout]; ; settle(0.02)) {
+        if (done()) return YES;
+        if ([end timeIntervalSinceNow] <= 0) return NO;
+    }
+}
+static BOOL atLeastMacOS27(void) {
+    return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27;
+}
 // macOS 26 and earlier: a Dock window at layer 18. macOS 27 moved Mission
 // Control into WindowManager, which puts layer 19 shield windows up while open.
 static BOOL mcShowing(void) {
@@ -304,7 +313,7 @@ static void closeMissionControl(void) {
     CGEventRef u = CGEventCreateKeyboardEvent(NULL, 53, false);
     if (d) { CGEventPost(kCGSessionEventTap, d); CFRelease(d); }
     if (u) { CGEventPost(kCGSessionEventTap, u); CFRelease(u); }
-    for (int i = 0; i < 20 && mcShowing(); i++) settle(0.1);
+    waitUntil(2.0, ^{ return (BOOL)!mcShowing(); });
 }
 
 // mc.display groups: children of Dock's "mc" group up to macOS 26, direct
@@ -338,27 +347,34 @@ static AXUIElementRef mcSpacesGroupFor(NSString *ident) {
         [[NSWorkspace sharedWorkspace] openApplicationAtURL:[NSURL fileURLWithPath:
             @"/System/Applications/Mission Control.app"]
             configuration:[NSWorkspaceOpenConfiguration configuration] completionHandler:nil];
-    AXUIElementRef group = NULL;
-    for (int i = 0; i < 30 && !group; i++) {
-        settle(0.1);
-        // strong ids, not raw AXUIElementRefs: the children array is a
-        // temporary and ARC may free it (and its elements) right after the
-        // enumeration under -O2
-        id match = nil, first = nil;
+    // strong ids, not raw AXUIElementRefs: the children array is a temporary
+    // and ARC may free it (and its elements) right after the enumeration under -O2
+    __block id match = nil, first = nil;
+    waitUntil(3.0, ^{
         for (id k in mcDisplayGroups(dock, wm)) {
             if (!first) first = k;
             CGPoint p = axOrigin((__bridge AXUIElementRef)k);
-            if (fabs(p.x - want.x) < 2 && fabs(p.y - want.y) < 2) { match = k; break; }
+            if (fabs(p.x - want.x) < 2 && fabs(p.y - want.y) < 2) { match = k; return YES; }
         }
-        if (!match && i == 29) match = first;   // display moved mid-open, take the menu bar one
-        if (match) group = (AXUIElementRef)CFBridgingRetain(match);
-    }
+        return NO;
+    });
+    if (!match) match = first;   // display moved mid-open, take the menu bar one
     if (dock) CFRelease(dock);
     if (wm) CFRelease(wm);
-    if (!group) return NULL;
-    settle(0.35);   // let the bar finish laying out
-    AXUIElementRef spaces = axFind(group, @"mc.spaces", 2);
-    CFRelease(group);
+    if (!match) return NULL;
+    AXUIElementRef group = (__bridge AXUIElementRef)match;
+    // 26 and earlier needed the bar to finish laying out; 27 takes presses
+    // as soon as mc.spaces.add exists
+    if (!atLeastMacOS27()) settle(0.35);
+    __block AXUIElementRef spaces = NULL;
+    waitUntil(1.0, ^{
+        spaces = axFind(group, @"mc.spaces", 2);
+        if (spaces && !atLeastMacOS27()) return YES;
+        AXUIElementRef add = spaces ? axFind(spaces, @"mc.spaces.add", 2) : NULL;
+        if (add) { CFRelease(add); return YES; }
+        if (spaces) { CFRelease(spaces); spaces = NULL; }
+        return NO;
+    });
     return spaces;
 }
 
@@ -472,12 +488,12 @@ static int cmdCreate(NSString *name) {
         return 1;
     }
     AXError err = AXUIElementPerformAction(add, kAXPressAction);
-    NSDictionary *fresh = nil;
-    for (int i = 0; i < 30 && !fresh; i++) {
-        settle(0.1);
+    __block NSDictionary *fresh = nil;
+    waitUntil(3.0, ^{
         for (NSDictionary *s in spaceInfos())
-            if (![had containsObject:s[@"uuid"]]) { fresh = s; break; }
-    }
+            if (![had containsObject:s[@"uuid"]]) { fresh = s; return YES; }
+        return NO;
+    });
     closeMissionControl();
     if (!fresh) { fprintf(stderr, "create: the Dock did not add a space (axerr %d)\n", err); return 1; }
     if (name.length) {
@@ -516,7 +532,8 @@ static int cmdRemove(NSString *query) {
         closeMissionControl();
         return 1;
     }
-    NSArray *thumbs = axChildren(list);
+    __block NSArray *thumbs = nil;
+    waitUntil(1.0, ^{ thumbs = axChildren(list); return (BOOL)(thumbs.count == total); });
     if (thumbs.count != total) {
         fprintf(stderr, "rm: Mission Control shows %lu thumbnails for %lu spaces, not touching it\n",
                 (unsigned long)thumbs.count, (unsigned long)total);
@@ -525,13 +542,11 @@ static int cmdRemove(NSString *query) {
     }
     AXError err = AXUIElementPerformAction(
         (__bridge AXUIElementRef)thumbs[[s[@"ord"] intValue] - 1], CFSTR("AXRemoveDesktop"));
-    BOOL gone = NO;
-    for (int i = 0; i < 30 && !gone; i++) {
-        settle(0.1);
-        gone = YES;
+    BOOL gone = waitUntil(3.0, ^{
         for (NSDictionary *now in spaceInfos())
-            if ([now[@"uuid"] isEqual:s[@"uuid"]]) { gone = NO; break; }
-    }
+            if ([now[@"uuid"] isEqual:s[@"uuid"]]) return NO;
+        return YES;
+    });
     closeMissionControl();
     if (!gone) { fprintf(stderr, "rm: the Dock did not remove it (axerr %d)\n", err); return 1; }
     NSMutableDictionary *map = loadMap();
@@ -593,9 +608,7 @@ static int cmdLayoutRestore(void) {
             for (NSInteger i = 0; i < need; i++) {
                 NSUInteger before = desktopsOnDisplay(ident).count;
                 AXUIElementPerformAction(add, kAXPressAction);
-                int t = 0;
-                for (; t < 30 && desktopsOnDisplay(ident).count == before; t++) settle(0.1);
-                if (t == 30) {
+                if (!waitUntil(3.0, ^{ return (BOOL)(desktopsOnDisplay(ident).count != before); })) {
                     fprintf(stderr, "restore: the Dock stopped adding spaces\n");
                     closeMissionControl();
                     return 1;

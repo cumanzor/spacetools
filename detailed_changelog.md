@@ -1,3 +1,17 @@
+[2026-09-25 20:04:06 UTC] [SpaceBadge/UI: MC name strip moved below the expanded space previews]
+[Attempt #1]
+[Files Changed]
+- spacebadge.m:289 - strip origin offset from the screen top goes from 158 to
+  196pt. Hovering the Spaces bar in Mission Control expands it into the
+  thumbnail row, which reached down over the top of the strip.
+[Possible Ripple Effects]
+- Strip sits a bit closer to the window thumbnails in the MC body. Offset is
+  still fixed, not derived from the bar height, so a different display scale
+  or Spaces bar size could need another nudge.
+[Testing Notes]
+- Open MC, hover the Spaces bar so previews expand; the strip should be fully
+  visible below them.
+
 [2026-09-24 22:02:41 UTC] [docs/Verified: no managed space creation without Mission Control on macOS 27 with SIP on]
 [Attempt #1]
 [Files Changed]

@@ -286,7 +286,7 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
     // this process never has a key window
     NSRect scr = ([NSScreen screens].firstObject ?: [NSScreen mainScreen]).frame;
     NSRect frame = NSMakeRect(MAX(NSMinX(scr) + 8, NSMidX(scr) - sz.width/2 - 22),
-                              NSMaxY(scr) - 158 - sz.height, sz.width + 44, sz.height + 20);
+                              NSMaxY(scr) - 196 - sz.height, sz.width + 44, sz.height + 20);
     if (!self.strip) {
         self.strip = [self makeOverlay:frame];
         self.strip.collectionBehavior |= NSWindowCollectionBehaviorCanJoinAllSpaces;

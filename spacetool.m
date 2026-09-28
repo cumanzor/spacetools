@@ -187,7 +187,7 @@ static BOOL postDockSwipe27(int dir, double speed) {
 // Mission Control keeps drawing the space you left and ctrl-arrow counts from
 // the wrong desktop. Driving the Dock's own swipe gesture makes the Dock
 // perform the switch, so its model stays in step. Field numbers and the 9999
-// velocity (which skips the slide animation) are yabai's, from
+// velocity (which skips the slide animation) are yabai's (MIT), from
 // src/space_manager.c space_manager_focus_space_using_gesture.
 static int switchToSpace(NSDictionary *s) {
     NSString *ident = s[@"display"];

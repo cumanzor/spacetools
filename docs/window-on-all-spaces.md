@@ -1035,13 +1035,13 @@ The probe and Probe.app from this session were kept at
 that directory is OS-cleanable, so this doc (Appendix A) is the durable
 copy.
 
-Primary sources for the cross-checked claims: yabai
+Primary sources for the cross-checked claims: yabai (MIT, `LICENSE.txt`)
 `src/osax/payload.m` (sticky = `SLSSetWindowTags` bit 11, tag_size 64;
 shadow = bit 3; layer/opacity/move/scale calls; SA socket and opcode
 layout; the per-version Dock offset scanning) and the yabai wiki
 "Disabling System Integrity Protection" (the Route A recipe, current Apr
-2026); Loop `Loop/Private APIs/SLSWindowTags.swift` (the tag bit table,
-from SkyLight's own debug strings on 26.3.1); yabai issues #2593
+2026); Loop (MIT) `Loop/Private APIs/SLSWindowTags.swift` (the tag bit
+table, from SkyLight's own debug strings on 26.3.1); yabai issues #2593
 (universal-owner entitlement method + maintainer confirmation),
 #2634/#2644/#2764 (26.x pattern churn), #2707 (sudoers sha256 pattern),
 #2741 (boot-args plural), #2747 (remote-thread injection failure modes);

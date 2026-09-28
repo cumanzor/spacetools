@@ -7,6 +7,13 @@ process is silently gated, so the write must run from inside the Dock).
 Route A chosen over the AMFI-off entitlement route. This file is the build
 plan to execute once SIP is relaxed.
 
+License note: yabai is MIT (LICENSE.txt), and the ported pieces (loader
+mechanics from `src/scripting_addition`, `do_space_focus` in phase 2,
+`do_window_sticky`'s call shape) carry a one-line origin comment in the
+ported code, same convention as the InstantSpaceSwitcher credit in
+`spacetool.m`. Personal repo, never distributed, so MIT imposes nothing
+today; the comments keep the provenance honest if that ever changes.
+
 ## 0. SIP prerequisite (one time, per the yabai wiki recipe, Apple Silicon 13+)
 
 Recovery (power button at boot, Options > Continue > Utilities > Terminal):

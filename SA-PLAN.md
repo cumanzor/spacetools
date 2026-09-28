@@ -39,6 +39,23 @@ Rollback at any time: Recovery `csrutil enable`, then
 `sudo nvram -d boot-args`, reboot. Nothing else this plan installs touches
 system state; uninstalling is removing the .sa and the sudoers file.
 
+If anything else gets relaxed in the same Recovery session, pass every
+group in a single csrutil call: each `csrutil enable --without ...` call
+writes the whole config, so a second partial call re-seals whatever the
+first one opened. Concretely, to also use vphone-cli (Lakr233, MIT; virtual
+iPhone via Virtualization.framework + PCC research guests), the whole
+session is:
+
+```sh
+csrutil enable --without fs --without debug --without nvram
+csrutil allow-research-guests enable    # separate csrutil verb, stacks fine
+```
+
+vphone needs no AMFI relaxation (its privileged helper passes each
+verified VM binary through AMFI per-binary), so it does not erode this
+plan's keep-AMFI-armed rationale. Its own docs' `csrutil enable --without
+debug` line is the one to skip in favor of the combined call above.
+
 ## 1. Phase 1: sticky windows (the goal)
 
 ### 1.1 Payload: `spacetoosa.m` -> `SpaceToolSA.sa`

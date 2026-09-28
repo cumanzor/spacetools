@@ -1,3 +1,92 @@
+[2026-09-28 20:52:42 UTC] [docs/Verified: per-window "appear on all spaces" is tag bit 11, gated to Dock-grade writers; SA route chosen and planned]
+[Attempt #1]
+[Files Changed]
+- docs/window-on-all-spaces.md - new. Companion to the space-creation doc,
+  covering the window side: the window-tag mechanism and the full 64-bit tag
+  table (Loop's reverse-engineering of SkyLight 26.3.1's short-name debug
+  table, positions cross-checked against observed values on 26A428), what
+  the compositor actually renders vs what the APIs claim, the per-app bridge
+  ops with exact behaviors, every gated per-window path exercised live, the
+  dead-unentitled universal-owner route, the Route A/B comparison with the
+  exact csrutil/boot-arg recipes and yabai issue-tracker gotchas, the tier
+  model of what the SA unlocks, the complete categorized SLSBridged* class
+  dump (the first durable copy; README referenced the dump but nothing
+  listed it), op signatures from runtime introspection, observed tag values
+  decoded, and the probe source + regeneration steps as appendices.
+- SA-PLAN.md - new, repo root. The staged build plan for the chosen route:
+  SIP prerequisite with verification and rollback, phase 1 payload
+  (spacetoosa.m: socket + HELLO/STICKY_SET/STICKY_CLEAR/STICKY_QUERY, pure
+  SLS, zero Dock offsets), injector (load-sa + sudoers sha256 entry +
+  Dock-restart re-injection via SpaceBadge's Dock poll), stick/unstick
+  verbs and shims, Makefile targets, an eyes-on acceptance checklist, and
+  optional phase 2 (instant sw via dock_spaces + _currentSpace) and phase 3
+  (create/rm via Dock addSpace/removeSpace offsets with AX fallback).
+- simple_changelog.md, detailed_changelog.md - this entry. No code changed;
+  all probes ran from a scratch .app in the OS temp dir.
+[Findings]
+- Mechanism: "appear on all spaces" is window tag bit 11 (onAllWorkspaces),
+  set in-process by NSWindow canJoinAllSpaces, set cross-process by yabai's
+  Dock-injected payload via SLSSetWindowTags(cid, wid, mask, 64). Both tag
+  write symbols exist on 27.0 and are silently ignored on foreign windows
+  (return kCGErrorSuccess, tags unchanged; same no-op class as SLSMoveWindow).
+- Render truth: a tagged window renders on every space (verified live by
+  the user switching by hand) while CGWindowListCopyWindowInfo(OnScreenOnly)
+  reports it offscreen on the destination space and CGSCopySpacesForWindows
+  membership gets stripped back to the home space on real switches. The
+  "verify with a screenshot, not an API read" rule now has a second
+  documented case, in the opposite direction.
+- Per-app works today, no SIP: SLSBridgedProcessAssignToAllSpacesOperation
+  (initWithProcess:, int pid) sets bit 11 on all existing windows, registers
+  them on every desktop space, and tags windows created later (born
+  0x...2801). Reset via ProcessAssignToSpaceOperation clears bit 11 on all
+  the process's windows regardless of which space they sit on and gathers
+  them to the assigned space. MoveWindowsToManagedSpace preserves bit 11.
+  So stick <app>/unstick <app> is implementable today on the existing
+  bridgedOps() path.
+- Per-window is gated everywhere: no window-level tag op among all
+  SLSBridged* classes; SLSBridgedAddWindowsToSpacesOperation no-ops even on
+  own windows (single- and multi-space, bundled app, correct NSNumber
+  shapes, same array format the working move op takes); every sequence
+  dodge fails because the process reset sweeps globally.
+- Universal-owner route (issue #2593): all four symbols exist on 27.0.
+  Unentitled, SLSNewConnection works but SLSSetUniversalOwner returns 1002
+  and tags stay no-op. An adhoc binary signed with
+  com.apple.private.skylight.universal-owner is SIGKilled at spawn (exit
+  137, zero output): AMFI kills restricted entitlements off platform
+  signatures. Route B therefore needs amfi=0x80, which the OpenCore research
+  maps as AMFI_ALLOW_EVERYTHING, identical to amfi_get_out_of_my_way=1,
+  full AMFI off; no narrower restricted-entitlements bit exists, and AMFI
+  off also breaks third-party mic/camera TCC prompts.
+- Decision: Route A (scripting addition into the Dock). Recipe: csrutil
+  enable --without fs --without debug --without nvram, then
+  sudo nvram boot-args="-arm64e_preview_abi". Three CSR groups vs Route
+  B's one, but AMFI stays armed and there is no runtime Dock disruption;
+  yabai-proven through 26.x. Crucially our payload needs none of yabai's
+  Dock-internal offset scanning (their September tax, churned 26.0 -> 26.4
+  per issue #2764); sticky is four pure SLS symbols, all verified on 26A428.
+[Possible Ripple Effects]
+- None on the shipped tools: no repo code changed, all experiments restored
+  (both test windows back to bit11=0 on their home space, process
+  unassigned).
+- SA-PLAN.md phase 1 depends on the loader mechanics (remote thread into
+  the Dock) working on 27.0, which is the one untested part of the plan;
+  yabai's wiki recipe is current through 26.x and their loader regressions
+  (7.1.17) were their own bug.
+- Per-app sticky via the bridge remains a zero-SIP fallback for the whole
+  feature if the SA route stalls.
+[Testing Notes]
+- Every live result came from a scratch probe app (bundled, adhoc) in
+  /var/folders/.../opencode/sticky-probe; the doc's Appendix A is the
+  durable source copy.
+- The key verification was visual, not API-based, per the 2026-07-20
+  lesson: the user confirmed the tagged window followed manual space
+  switches while both window-list APIs said otherwise.
+- Probe artifacts worth remembering: buffered stdout hides segfault
+  locations (setvbuf unbuffered first); the probe ARC-over-releases at
+  autorelease-pool pop after building bridge ops + NSWindow in one run
+  (exit 139 at exit, after results print); a loginwindow window can be the
+  frontmost layer-0 pick right after boot or a TCC dialog.
+
 [2026-09-25 20:04:06 UTC] [SpaceBadge/UI: MC name strip moved below the expanded space previews]
 [Attempt #1]
 [Files Changed]

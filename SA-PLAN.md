@@ -144,15 +144,26 @@ us the per-window precision the bridge cannot.
 ### 1.5 Acceptance checklist (run with eyes, per the research doc's
 section 2: API reads lie for tagged windows)
 
-1. `make install-sa`, then `spacetool stick` on the terminal window.
-2. Switch spaces by hand: the window is on screen on every space.
-3. `spacetool unstick`, switch again: normal single-space behavior.
-4. `sw <anywhere>` while sticky: window still everywhere; `send` still
-   moves it (move preserves bit 11, verified in research).
-5. `killall Dock`; SpaceBadge re-injects within a few seconds; HELLO
-   still answers; repeat 2.
-6. Reboot: LaunchAgent brings SpaceBadge up, Dock restarts, re-inject
-   fires; repeat 2.
+Status 2026-09-30, live on 27.0 (26A428) with the relaxations above:
+
+1. DONE: `sudo ./loadsa` -> "payload injected into Dock". Unprivileged run
+   fails exactly at task_for_pid, which doubles as an arm64e-flag smoke test.
+2. DONE: `spacetool stick` on the terminal -> "stuck window ... appears on
+   all spaces" (tag flip verified in the reply). User-verified by hand:
+   the window renders on every space.
+3. DONE: `spacetool unstick` -> bit cleared, `stick list` empty.
+4. DONE: `stick list` roundtrip both states.
+5. ANSWERED, negative: `killall Dock` does NOT auto-load the osax at Dock
+   startup on 27 (socket dead 6s later). The payload dies with its host, so
+   re-injection after every Dock restart is required. This makes the
+   sudoers + SpaceBadge re-inject automation (1.2) mandatory, not optional.
+6. NOT YET: reboot persistence (needs the sudoers re-inject from 1.2 first).
+   Note the operational consequence of 5: reboot = Dock starts clean, so
+   until 1.2 lands, stick commands after a reboot need `sudo ./loadsa`.
+
+Also found live: `sudo make install-sa` signs as root and dies with
+errSecInternalComponent (root cannot reach the login keychain); the target
+now refuses a root run, sudo only wraps the rm/cp.
 
 ## 2. Phase 2 (optional): instant `sw` through the SA
 

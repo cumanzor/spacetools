@@ -1,3 +1,47 @@
+[2026-09-30 03:12:23 UTC] [spacetool/Phase 1 live-verified: injection, stick, unstick, list; no osax auto-load on Dock restart]
+[Attempt #1 for this verification; build was the 2026-09-30 02:49:45 entry below]
+[Files Changed]
+- Makefile - stick/unstick shims added to the install block (uninstall drops
+  them too, and points at uninstall-sa).
+- README.md - Dock-restart consequence documented (payload dies with its
+  host; sudo ./loadsa to restore; phase 1.5 pending).
+- SA-PLAN.md - acceptance checklist marked with live results, including the
+  negative auto-load answer and the errSecInternalComponent lesson.
+- simple_changelog.md, detailed_changelog.md - this entry.
+[What was verified live on 27.0 (26A428), relaxations + boot-arg in place]
+- sudo ./loadsa: "payload injected into Dock (pid 718)". The unprivileged
+  run fails exactly at task_for_pid ("run as root"), which doubles as a
+  smoke test that the arm64e binary executes (boot-arg active).
+- spacetool stick: "stuck window 221 (iTerm): appears on all spaces". The
+  tag flip is verified in the reply (bit 11 set), not just the CGError code.
+- Visual ground truth, per the 2026-07-20 lesson: the user switched spaces
+  by hand and the window rendered on every space. Confirmed verbally.
+- spacetool unstick: bit cleared, window back on its own space; stick list
+  empty afterward, and stick list showed the window while it was stuck
+  (QUERY roundtrip both states).
+[The negative result that matters]
+- killall Dock + 6s: the socket is gone. The Dock does NOT auto-load
+  /Library/ScriptingAdditions osax bundles at startup on 27 under this
+  configuration (fs+debug+nvram off, arm64e flag on). The payload dies with
+  its host process, so every Dock restart (including every reboot) needs
+  re-injection. Consequence: the sudoers sha256 entry + SpaceBadge Dock-pid
+  watch auto re-inject from SA-PLAN 1.2 goes from optional to mandatory
+  (phase 1.5), otherwise stick is a manual sudo away after each reboot.
+[Also found live]
+- sudo make install-sa: codesign as root cannot reach the login keychain
+  ("unable to build chain to self-signed root", errSecInternalComponent)
+  and leaves root-owned spacetools.osax/ behind. Fixed in ba6b8c1: the
+  target refuses a root run, and the invocation is make install-sa with
+  sudo only wrapping the rm/cp.
+[Possible Ripple Effects]
+- The Dock now hosts our socket thread permanently (until its next restart);
+  one ignored signal disposition (SIGPIPE) inside the Dock.
+- Until phase 1.5 lands, a reboot silently reverts stick commands to the
+  not-loaded hint (exit 1, no data loss; re-inject to restore).
+[Testing Notes]
+- Remaining unverified: reboot persistence (blocked on phase 1.5's re-inject
+  automation), and multi-display behavior of a stuck window (untouched).
+
 [2026-09-30 02:49:45 UTC] [spacetool/Feature: stick/unstick per-window via a Dock scripting addition, phase 1 built]
 [Attempt #1 - live verification still pending the reboot; see Testing Notes]
 [Files Changed]

@@ -68,6 +68,10 @@ Without the payload, `stick` exits 1 with the install hint; per-app assignment
 (the native "All Desktops") remains available with no SIP changes through the
 bridge op if ever needed as a stopgap.
 
+The payload dies with the Dock: after a Dock restart (including a reboot),
+re-inject with `sudo ./loadsa` before `stick` works again. The sudoers-pinned
+auto re-inject is the remaining phase 1.5 item in SA-PLAN.md.
+
 `send` takes the frontmost window, which it finds by asking for onscreen windows
 (they come back front to back, and "onscreen" already means the current space)
 and taking the first one at layer 0 bigger than 120x120. So it acts on whatever

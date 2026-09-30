@@ -112,7 +112,8 @@ remote thread that dlopens it. Needs root, so:
 - Re-injection on Dock restart: SpaceBadge already polls the Dock every
   300ms for Mission Control detection; add Dock-pid-change detection there
   that shells the NOPASSWD load. (yabai users do this with a
-  `dock_did_restart` signal; we have a daemon already.)
+  `dock_did_restart` signal; we have a daemon already.) Execution detail
+  for this phase: ~/Desktop/spacetools-phase-1.5-handoff.md.
 
 ### 1.3 CLI verbs in `spacetool.m`
 

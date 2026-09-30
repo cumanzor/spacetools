@@ -49,6 +49,76 @@
 - Durable fix is still SA-PLAN phase 2: an absolute in-Dock space focus
   has no stale-base problem at all.
 
+[2026-09-30 16:52:59 UTC] [spacetool/Diagnosis: synthetic-swipe presentation corruption after display churn; not our regression; space-set drift found]
+[Attempt #1 of the investigation; ~3h live debugging, all elimination cells run by hand]
+[Symptom, first reported after moving from the built-in display to AVP via Sidecar]
+- `sw` and SpaceBadge's MC+digit (both go through `spacetool switch`, the
+  synthesized fluid-touch swipe) land on spaces whose presentation is
+  corrupted: no menu bar, no badge, black or partially drawn wallpaper,
+  windows trickling in only after triggering Mission Control (which forces
+  a full space re-presentation and snaps the desktop correct).
+- Real trackpad swipes and MC clicks always present correctly.
+- CGS bookkeeping is correct throughout: CGSCopyManagedDisplaySpaces reports
+  the right current space, the managed list is valid, and `sw`'s verify loop
+  exits 0 while the screen shows the phantom.
+- Reproduced across every display combination reported: 3-monitor main
+  setup, MBP's display only, AVP via Sidecar. Survives a reboot.
+[Elimination matrix, all live]
+- Switch code: reverted to HEAD (session tap, 2000*n velocity, the exact
+  bytes that worked since 2026-09-24); git tree pristine. Still broken.
+- HID-tap experiment (posting to kCGHIDEventTap instead of kCGSessionEventTap):
+  tried live, no fix, reverted (never committed).
+- Animated velocity 600 (instead of the animation-skipping 2000*n): switches
+  land but presentation still corrupt; also outruns sw's 2s verify loop
+  (false "Dock ignored the gesture" that later lands). Reverted.
+- SA payload: unloaded (SpaceBadge booted out + killall Dock, socket dead
+  confirmed). Still broken -> phase 1.5's auto re-inject is cleared.
+- Dock restarted (pid 26179 -> 3223 -> 7958 -> 31969 across the night):
+  still broken. WindowManager killed+relaunched (680 -> 4372): still broken.
+- BetterDisplay quit (it holds a full-screen 3360x1440 window at layer
+  2147483629, above the menu bar and everything - ruled out as the black
+  screen, it persists while healthy too): still broken.
+- Fresh reboot with stable OS (sw_vers 26A428 unchanged, Dock binary dated
+  Sep 3, no staged update applied at boot): still broken.
+[Conclusion]
+- Not a spacetools regression: nothing in the repo or runtime we ship is
+  present in the broken state. The system consumes the synthesized
+  fluid-touch gesture without running the full desktop presentation
+  (SLSShowSpaces/SLSSideSpaces-class work), post-display-churn, and the
+  wedged state survives reboot. The Dock never restarted across the first
+  churn, but restarting everything after the fact does not repair it, so
+  the wedge is in the presentation path keyed to state laid down at churn
+  time (space set identity).
+- Two fix paths: SA-PLAN phase 2 (switch from inside the Dock: yabai's
+  do_space_focus = SLSShowSpaces + SLSSHideSpaces +
+  SLSManagedDisplaySetCurrentSpace + dock_spaces `_currentSpace` ivar poke,
+  which does the presentation explicitly and needs no gesture at all), or
+  the bounded alternative: event-tap capture of a REAL swipe and diff the
+  raw IOHID field-4205 payload against our synthesized one (likely gaps:
+  real sender id, continuous phase/progress stream, real touch coords).
+[Separate bug found while probing]
+- The space set drifted from 3 to 5: com.apple.spaces.plist re-materialized
+  two stale spaces from an old monitor section (xcode27-sdk, ManagedSpaceID
+  39, and unified, ManagedSpaceID 40) wedged between comms/spacetools and
+  personal. Every ordinal habit shifts (MC+3 / sw 3 = xcode27-sdk, personal
+  is now ordinal 4), and landing on an unexpected mostly-empty space reads
+  like a phantom. Cleanup: `spacename rm xcode27-sdk && spacename rm unified`
+  (windows merge to a neighbor). Operational lesson for future "phantom
+  space" reports: check `spacename list` first.
+[Also verified tonight, unrelated to the bug]
+- Phase 1.5 reboot acceptance PASSED: after reboot, SpaceBadge auto re-injected
+  at login (log: "sa re-injected into Dock (pid 695)" at boot time), stick
+  answered with zero manual steps, and the user stuck a window by hand post
+  reboot. SA-PLAN 1.5 item 3 closed.
+- The old /tmp probe tools (spaceprobe/saclient/winbounds/watcher) were wiped
+  by the reboot; spaceprobe rebuilt during this session, sources in this entry's
+  shape (CGSCopyManagedDisplaySpaces dump + CGSCopySpacesForWindows membership).
+[Testing Notes]
+- Next steps, user's pick: clean up the two extra spaces (rm), then either the
+  real-swipe payload capture/diff (bounded, fixes the gesture path) or phase 2
+  (durable, kills the gesture dependency). MC+digit stays broken until one of
+  them lands; real swipes and MC clicks are the working fallbacks meanwhile.
+
 [2026-09-30 05:16:25 UTC] [spacetool/Fix: display changes collapse stuck windows; stick forces the tag transition]
 [Attempt #1, live-verified on 27.0 (26A428) with a Sidecar display plugged in]
 [The bug]

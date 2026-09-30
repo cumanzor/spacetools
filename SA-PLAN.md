@@ -177,9 +177,10 @@ Phase 1.5 (auto re-injection) status 2026-09-30, live on 27.0 (26A428):1. DONE: 
    sudo -n denies in ~12ms, SpaceBadge logs "sa re-inject failed (sudo
    exit 1): sudo: a password is required" once per restart, `stick` shows
    the hint + exit 1, no hang.
-3. NOT YET (user): reboot. Everything is in place (LaunchAgent starts
-   SpaceBadge at login; Dock pid watch covers the boot case via the
-   0->pid transition); needs one eyes-on reboot to close.
+3. DONE (2026-09-30): reboot with SpaceBadge's LaunchAgent: payload auto
+   re-injected at login (log line "sa re-injected into Dock" at boot
+   time), stick answered with zero manual steps, user stuck a window by
+   hand post-reboot. Phase 1.5 is fully accepted.
 4. DONE: rebuild + refresh: refresh-sa re-pins (the running pin survived
    byte-identical rebuilds and three `make install` re-signs; loadsa
    rebuilds are byte-deterministic for an unchanged toolchain, so the pin
@@ -214,6 +215,16 @@ swipe-velocity hacks; the Dock-ivar poke is the desync fix the 2026-07-30
 changelog entry reverse-engineered from outside. Cost: one pattern to
 maintain per macOS version. Keep the gesture path as fallback when the
 pattern misses.
+
+2026-09-30 note: the gesture path is now broken outright after display
+churn (synthesized fluid-touch switches stop running the desktop
+presentation; survives reboot, all display combos; not our regression,
+full elimination matrix in detailed_changelog 2026-09-30 16:52:59). That
+promotes phase 2 from "optional instant" to "the durable switch path";
+finding dock_spaces via the ObjC runtime from inside the Dock (class/
+ivar/selector names instead of hex patterns) is the approach to try
+first. The bounded alternative if phase 2 stalls: capture a real swipe
+and diff the raw IOHID field-4205 payload against the synthesized one.
 
 ## 3. Phase 3 (optional): create/rm without Mission Control
 

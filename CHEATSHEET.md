@@ -8,6 +8,10 @@
 | `sw 3` | switch to Desktop 3 |
 | `bring messages` | pull Messages' windows to this space and focus them |
 | `send comms` | push the frontmost window to comms, stay where you are |
+| `stick` | pin the frontmost window to every space |
+| `stick slack` | pin the frontmost window of a named app instead |
+| `unstick` | release the focused window back to its own space |
+| `stick list` | windows currently pinned (none = nothing stuck) |
 | `name this space` + `comms` | name the space you are on |
 | `name this space` (empty arg) | clear the current space's name |
 | `list spaces` | all spaces, `*` marks where you are |
@@ -27,6 +31,10 @@ spacename set comms    # name current space ("" clears)
 sw comm                # switch by name prefix or number
 bring spark            # move app windows here + focus (fuzzy app match)
 send comms             # push the focused window to another space, stay put
+stick                  # pin the focused window to all spaces
+stick slack            # or pin the focused window of a named app
+unstick                # release the focused window back to its own space
+stick list             # windows currently pinned
 
 spacename create dev      # add a desktop at the end, optionally named
 spacename rm dev          # remove a space (windows merge to a neighbor)
@@ -42,6 +50,13 @@ grant story as `sw`. `rm` refuses the last desktop and fullscreen spaces.
 `bring` pulls a named app's windows to you. `send` pushes the window in front of
 you away. `send` acts on whatever is frontmost, so check what that is before
 firing it at a space.
+
+`stick` / `unstick` pin the focused window (or a named app's frontmost window)
+to every space, like a manual "All Desktops" but per window. This needs the SA
+payload inside the Dock (SA-PLAN.md setup; one `make install-sa` ever). It dies
+with the Dock, but SpaceBadge re-injects it automatically after every Dock
+restart, reboots included, so it should always just answer. `stick list` needs
+no window in front of you.
 
 ## Badges
 
@@ -94,7 +109,7 @@ the names file and the Accessibility entry.
 | layout snapshot | ~/.config/spacelayout.json (written by `spacename layout save`) |
 | CLIs | ~/.local/bin/{spacename,sw,bring} (shims into SpaceTool.app) |
 | apps | ~/Applications/{SpaceTool,SpaceBadge}.app |
-| Raycast scripts | ~/Documents/scripts/Raycast/{sw,bring,send,name-space,list-spaces,create-space,remove-space,save-layout,restore-layout}.sh |
+| Raycast scripts | ~/Documents/scripts/Raycast/{sw,bring,send,stick,unstick,name-space,list-spaces,create-space,remove-space,save-layout,restore-layout}.sh |
 | LaunchAgent | ~/Library/LaunchAgents/dev.umanzor.spacebadge.plist |
 | source | ~/repos/AI/spacetools (make install rebuilds everything) |
 
@@ -102,6 +117,10 @@ the names file and the Accessibility entry.
 
 - `bring`/`sw` stop working after a macOS update: the private SkyLight bridge
   changed. Check yabai issue #2789 and asmvik/yabai for the new API shape.
+- `stick` says "scripting addition not loaded": the payload died with a Dock
+  restart and auto re-inject failed. Usual cause is a stale sudoers pin after
+  editing `loadsa.m` (`make refresh-sa` re-pins); otherwise check SpaceBadge's
+  log (`log show --predicate 'process == "SpaceBadge"'`) for the sudo failure.
 - Badge on wrong space or stacked badges: `make install-agent` to restart the
   daemon. `kickstart -k` works only if you have not rebuilt since it started.
 - `1`-`9` does nothing in Mission Control: SpaceBadge lost its Accessibility

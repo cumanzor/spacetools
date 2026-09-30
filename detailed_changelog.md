@@ -1,3 +1,22 @@
+[2026-09-30 04:43:47 UTC] [spacetool/Raycast stick/unstick pair]
+[Files Changed]
+- ~/Documents/scripts/Raycast/stick.sh, unstick.sh - new. send.sh shape
+  (schemaVersion 1, silent mode, Spaces package, Carlos author), optional
+  app-name argument ("optional": true, since the CLI query is optional),
+  exec the ~/.local/bin shims. Closes the deferred-polish item from the
+  phase 1.5 handoff (the spacetool load-sa verb remains deferred).
+- CHEATSHEET.md - daily-driving table rows (stick / stick <app> / unstick /
+  stick list), terminal-equivalent block lines, a stick paragraph in the
+  send/bring section (per-window "All Desktops", SA payload requirement,
+  auto re-inject after Dock restarts), stick,unstick added to the Raycast
+  paths row, and a when-it-breaks entry (not-loaded -> stale sudoers pin ->
+  make refresh-sa, else check SpaceBadge's log).
+[Testing Notes]
+- Scripts are plain exec shims over the live-verified phase 1.5 shims; no new
+  binary path. Raycast picks up new script commands on its next directory
+  scan (or add the directory if it is not the configured script directory,
+  which it is: the other Spaces commands live there).
+
 [2026-09-30 03:58:49 UTC] [spacetool/Phase 1.5: sudoers-pinned auto re-injection after every Dock restart]
 [Attempt #1 for this feature, live-verified on 27.0 (26A428); reboot item pending user eyes]
 [Files Changed]
@@ -84,9 +103,9 @@
   Console.app filtered on the process; the [spacebadge] lines are visible in
   `log show --predicate 'process == "SpaceBadge" AND eventMessage CONTAINS
   "[spacebadge]"'`.
-- Deferred polish (tracked): Raycast stick/unstick script commands in
-  ~/Documents/scripts/Raycast/ (send.sh shape), and a `spacetool load-sa`
-  verb wrapping the pinned loadsa.
+- Deferred polish (tracked): a `spacetool load-sa` verb wrapping the pinned
+  loadsa. (The Raycast stick/unstick pair from the same list landed in the
+  2026-09-30 04:43:47 entry above.)
 
 [2026-09-30 03:12:23 UTC] [spacetool/Phase 1 live-verified: injection, stick, unstick, list; no osax auto-load on Dock restart]
 [Attempt #1 for this verification; build was the 2026-09-30 02:49:45 entry below]

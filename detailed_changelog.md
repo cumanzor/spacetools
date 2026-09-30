@@ -1,3 +1,54 @@
+[2026-09-30 19:21:59 UTC] [spacetool/Fix: overlapping switches land on the wrong space]
+[Attempt #1]
+[Cause, reproduced live]
+- The 27 switch is a relative swipe: switchToSpace reads the current space
+  from CGS, computes delta = target - current, posts |delta| swipes. CGS
+  only updates ~170-250ms after the post. A second `spacetool switch`
+  started inside that window reads the stale current and adds its delta
+  on top of the first one's: from 3, `sw 6` (+3) then `sw 1` 30ms later
+  (-2 off the stale 3) landed on 4. At 30ms overlap 4/4 missed, at 60ms
+  1/4; each miss printed the misleading "grant Accessibility" message.
+- Sequential `sw` was 24/24 correct (each call blocks until CGS confirms),
+  so the terminal rarely hit this. SpaceBadge's MC+digit does: the tap
+  stays armed until the 300ms tick sees Mission Control gone, and every
+  digit keydown (a double tap, or autorepeat: InitialKeyRepeat=25 ~375ms,
+  KeyRepeat=2 30ms) spawns its own switch that waits on the same
+  MC-closed poll, so they wake within 0-50ms of each other.
+- Second gap found once serialized: CGS reports the new space before the
+  Dock accepts another gesture; a switch posted right after the previous
+  one landed was dropped whole (stayed put, "ignored").
+- 71405ee cleared as a suspect: its dropped settle is in the create/rm
+  Mission Control path, not the switch.
+- The corrupted-presentation wedge from the 16:52 entry did not reproduce
+  this session (screenshots after sequential and overlapped switches all
+  show menu bar, wallpaper, badge). Separate issue, still open.
+[Files Changed]
+- spacetool.m: sys/file.h import; cmdSwitch takes an exclusive flock on
+  /tmp/spacetool-switch_$USER.lock before matchSpace (so a queued switch
+  resolves the ordinal and reads current after the previous one landed)
+  and holds it through a 250ms post-landing settle (released at exit);
+  switchToSpace reports "wanted X, landed on space N instead" when the
+  space moved but not to the target, keeping the Accessibility hint for
+  the did-not-move case.
+- spacebadge.m: mcFired static, reset when MC opens; tapCallback swallows
+  autorepeat keydowns and any digit after the first per MC session.
+[Possible Ripple Effects]
+- `sw` returns ~250ms later than before (the visible switch is not slower).
+- Rapid distinct switches now queue FIFO by lock acquisition; truly
+  simultaneous launches resolve in whichever order grabs the lock first.
+- In MC, only the first digit acts; pressing a second digit before MC
+  closes is a no-op (it is swallowed, not passed to MC).
+[Testing Notes]
+- Live, 6 spaces, spans-displays on: overlap pairs at 30ms and 100ms 12/12
+  after the fix (was 0-3 of 4 per batch before); 4-switch bursts at 30ms
+  spacing land on the last target 3/3; sequential 6/6; SpaceBadge
+  restarted via launchctl kickstart, `sudo -n loadsa` still "payload
+  already active" (pin intact after make install).
+- Not yet eyes-on: MC+digit with a double tap / held digit through the
+  real keyboard.
+- Durable fix is still SA-PLAN phase 2: an absolute in-Dock space focus
+  has no stale-base problem at all.
+
 [2026-09-30 05:16:25 UTC] [spacetool/Fix: display changes collapse stuck windows; stick forces the tag transition]
 [Attempt #1, live-verified on 27.0 (26A428) with a Sidecar display plugged in]
 [The bug]

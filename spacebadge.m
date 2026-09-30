@@ -114,6 +114,7 @@ static BOOL mcOpen(void) {
 
 static CFMachPortRef keyTap;
 static BOOL mcArmed;
+static BOOL mcFired;   // one switch per mission control session: a second would race the first
 static int maxOrd;
 static pid_t dockPidSeen;
 
@@ -225,6 +226,8 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
                               kCGEventFlagMaskAlternate | kCGEventFlagMaskShift)) return e;
     int d = digitForKeycode(CGEventGetIntegerValueField(e, kCGKeyboardEventKeycode));
     if (!d || d > maxOrd) return e;
+    if (mcFired || CGEventGetIntegerValueField(e, kCGKeyboardEventAutorepeat)) return NULL;
+    mcFired = YES;
     switchToOrd(d);
     return NULL;   // swallow it so the digit does not leak to whatever is behind
 }
@@ -413,6 +416,7 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
     if (mc && !self.mcVisible) {
         for (NSWindow *b in self.badges.allValues) b.alphaValue = 0;
         mcArmed = YES;
+        mcFired = NO;
         if (keyTap) CGEventTapEnable(keyTap, true);
     }
     if (!mc && self.mcVisible) {

@@ -7,6 +7,7 @@
 #import <mach/mach_time.h>
 #import <sys/socket.h>
 #import <sys/un.h>
+#import <sys/file.h>
 
 typedef int (*ConnFn)(void);
 typedef CFArrayRef (*MDSFn)(int);
@@ -227,6 +228,12 @@ static int switchToSpace(NSDictionary *s) {
     for (int i = 0; i < 40; i++) {               // settle, then confirm it took
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
         if ([currentSpaceOnDisplay(ident)[@"sid"] isEqual:s[@"sid"]]) return 0;
+    }
+    NSDictionary *now = currentSpaceOnDisplay(ident);
+    if (![now[@"sid"] isEqual:cur[@"sid"]]) {
+        fprintf(stderr, "sw: wanted %s, landed on space %d instead\n",
+                [s[@"name"] length] ? [s[@"name"] UTF8String] : "?", [now[@"ord"] intValue]);
+        return 1;
     }
     fprintf(stderr, "sw: the Dock ignored the gesture. Grant Accessibility to\n"
                     "    ~/Applications/SpaceTool.app in System Settings >\n"
@@ -564,12 +571,21 @@ static int cmdSet(NSString *name) {
            [s[@"ord"] intValue], name.UTF8String);
     return 0;
 }
+// the swipe is relative, so a second switch that reads the current space before
+// the first one lands adds its delta to a stale base and overshoots
 static int cmdSwitch(NSString *query) {
+    NSString *lock = [NSString stringWithFormat:@"/tmp/spacetool-switch_%s.lock", getenv("USER") ?: "unknown"];
+    int lfd = open(lock.fileSystemRepresentation, O_CREAT | O_RDWR, 0600);
+    if (lfd >= 0) flock(lfd, LOCK_EX);
     NSDictionary *s = matchSpace(query);
     if (!s) { fprintf(stderr, "sw: no space matching \"%s\"\n", query.UTF8String); return 1; }
     if ([s[@"current"] boolValue]) { printf("already on %s\n", label(s).UTF8String); return 0; }
     int r = switchToSpace(s);
     if (!r) printf("switched to %s\n", label(s).UTF8String);
+    // cgs reports the new space before the dock takes another gesture; a queued
+    // switch posted in that gap is dropped, so hold the lock through it
+    fflush(stdout);
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
     return r;
 }
 static int cmdBring(NSString *query) {

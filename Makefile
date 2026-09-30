@@ -27,6 +27,9 @@ loadsa: loadsa.m
 sa: spacetoosa loadsa
 
 install-sa: sa
+	@if [ "$$(id -u)" = 0 ]; then \
+	  echo "fatal: run install-sa as yourself; sudo only wraps the rm/cp below" >&2; \
+	  echo "       (codesign needs your login keychain; root cannot sign)" >&2; exit 1; fi
 	mkdir -p $(SADIR)/Contents/MacOS
 	cp spacetoosa $(SADIR)/Contents/MacOS/spacetoosa
 	printf '%s\n' \

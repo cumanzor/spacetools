@@ -58,7 +58,7 @@ only the Dock's connection can write the on-all-spaces window tag
 SA-PLAN.md:
 
 ```sh
-sudo make install-sa   # build + install the payload bundle (needs sudo)
+make install-sa        # build + sign (as you) + sudo-copy the bundle
 sudo nvram boot-args="-arm64e_preview_abi" && sudo reboot   # once, see SA-PLAN.md
 sudo ./loadsa          # inject into the running Dock (arm64e needs the boot-arg)
 spacetool stick

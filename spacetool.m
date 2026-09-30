@@ -298,7 +298,7 @@ static int64_t saStickyOp(uint8_t op, uint32_t wid, int32_t *err) {
 
 static int saNotLoaded(const char *verb) {
     fprintf(stderr, "%s: scripting addition not loaded. run:\n"
-                    "    sudo make install-sa && sudo ./loadsa\n"
+                    "    make install-sa && sudo ./loadsa\n"
                     "    (needs the csrutil relaxations and the -arm64e_preview_abi"
                     " boot-arg, see SA-PLAN.md)\n", verb);
     return 1;

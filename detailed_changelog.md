@@ -60,8 +60,11 @@
   sudoers entry from SA-PLAN.md is deliberately not wired yet (phase 1.5,
   after the mechanism is proven live).
 [Testing Notes]
-- Next session steps: sudo make install-sa; sudo nvram
-  boot-args="-arm64e_preview_abi"; reboot; sudo ./loadsa; spacetool stick on
+- Next session steps: make install-sa (run as the user; sudo only wraps the
+  rm/cp into /Library/ScriptingAdditions. sudo make install-sa signs as root,
+  which cannot reach the login keychain and dies with errSecInternalComponent,
+  found live); sudo nvram boot-args="-arm64e_preview_abi"; reboot;
+  sudo ./loadsa; spacetool stick on
   the terminal; switch spaces by hand and watch the window follow; unstick;
   killall Dock and see whether the payload auto-loads at Dock startup (socket
   answers without loadsa) or needs re-injection.

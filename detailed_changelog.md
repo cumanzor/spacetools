@@ -1,3 +1,74 @@
+[2026-09-30 02:49:45 UTC] [spacetool/Feature: stick/unstick per-window via a Dock scripting addition, phase 1 built]
+[Attempt #1 - live verification still pending the reboot; see Testing Notes]
+[Files Changed]
+- spacetoosa.m - new. arm64e payload dylib, dlopen'd into the Dock by loadsa.
+  Constructor resolves SLSMainConnectionID, SLSSetWindowTags, SLSClearWindowTags
+  and the SLSWindowQuery iterator family via dlsym(RTLD_DEFAULT) (the Dock links
+  SkyLight; no private framework link needed at build time), ignores SIGPIPE
+  (a vanished client must not be able to kill the Dock), and starts a detached
+  pthread serving /tmp/spacetool-sa_$USER.socket (0600). Opcodes: HELLO (u8
+  version + u32 symbol mask, so an OS update that drops a symbol degrades
+  loudly instead of silently), STICKY_SET / STICKY_CLEAR (u32 wid, reply i32
+  CGError + u64 tags-after), STICKY_QUERY (same reply shape). Zero Dock-internal
+  offsets: unlike yabai's payload there is nothing to re-derive per OS release.
+  Socket shape ported from yabai's osax payload (MIT, src/osax/payload.m).
+- loadsa.m - new. arm64e injector, a port of yabai's src/osax/loader.m (MIT;
+  their arm64e injection path is based on work by Jeremy Legendre): root-run,
+  task_for_pid on the Dock, allocate stack + code segments, patch the shellcode
+  (pthread_create_from_mach_thread at +88, dlopen at +160, payload path at
+  +168, same offsets as yabai since the shellcode is copied verbatim), run it
+  via thread_create + thread_convert_thread_state and the 14.4+/15+ path of
+  terminate + thread_create_running, poll for the 0x79616265 magic. Payload
+  path: /Library/ScriptingAdditions/spacetools.osax/Contents/MacOS/spacetoosa.
+- spacetool.m - stick/unstick verbs plus stick list, sa socket client
+  (saConnect/saHello/saStickyOp), pickStickTarget (frontmost onscreen layer-0
+  window >= 120x120, optional app query scoped like bring's matching). stick
+  verifies the tag bit actually flipped in the reply and reports the two
+  failure modes distinctly (CGError vs the silent-ignore case the research
+  doc documented from outside). saNotLoaded prints the install hint. Usage
+  string updated. New imports: sys/socket.h, sys/un.h.
+- Makefile - sa / spacetoosa / loadsa / install-sa / uninstall-sa targets;
+  payload builds -arch arm64e -shared -fPIC -fobjc-arc, loader -arch arm64e.
+  install-sa assembles spacetools.osax/ locally, codesigns with the
+  codesign.env identity (adhoc fallback with a warning), then sudo rm+cp to
+  /Library/ScriptingAdditions. clean drops the new artifacts.
+- .gitignore - spacetoosa, loadsa, spacetools.osax.
+- README.md - stick/unstick/stick list in the command list + a setup section
+  pointing at SA-PLAN.md.
+[Why this design]
+- The research verdict: only the Dock's connection can write tag bit 11, so
+  the write must run inside the Dock; Route A keeps AMFI armed.
+- arm64e is mandatory for both binaries: the Dock is an arm64e process and
+  only loads arm64e images; running non-Apple arm64e needs the
+  -arm64e_preview_abi boot-arg. The flag was still NOT set this session
+  (nvram boot-args empty), so neither loadsa nor the payload can run yet.
+[Status]
+- Compile-verified: arm64e payload + loader + arm64 CLI all build clean;
+  stick/stick list correctly report the not-loaded hint against the missing
+  socket (exit 1).
+- Not yet verified: install-sa (needs sudo), the injection itself, the tag
+  flip from inside the Dock, visual across-space rendering, Dock-restart
+  behavior (killall Dock: whether the osax auto-loads at Dock startup on 27,
+  which would make re-injection free, is untested).
+[Possible Ripple Effects]
+- The payload alters the Dock process: one ignored signal disposition
+  (SIGPIPE) and one detached thread blocking in accept(). It logs to
+  Console.app as [spacetool-sa].
+- An OS update that renames the four SLS symbols turns stick commands into
+  HELLO-reported failures, never silent no-ops.
+- loadsa is signed adhoc-or-identity like everything else; the sha256-pinned
+  sudoers entry from SA-PLAN.md is deliberately not wired yet (phase 1.5,
+  after the mechanism is proven live).
+[Testing Notes]
+- Next session steps: sudo make install-sa; sudo nvram
+  boot-args="-arm64e_preview_abi"; reboot; sudo ./loadsa; spacetool stick on
+  the terminal; switch spaces by hand and watch the window follow; unstick;
+  killall Dock and see whether the payload auto-loads at Dock startup (socket
+  answers without loadsa) or needs re-injection.
+- Per the 2026-07-20 lesson and the research doc's section 2: acceptance is
+  eyes-on (window visible on every space), not API reads, since both
+  window-list APIs lie about tagged windows.
+
 [2026-09-28 20:52:42 UTC] [docs/Verified: per-window "appear on all spaces" is tag bit 11, gated to Dock-grade writers; SA route chosen and planned]
 [Attempt #1]
 [Files Changed]

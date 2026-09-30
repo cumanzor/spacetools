@@ -5,6 +5,8 @@
 #import <objc/message.h>
 #import <dlfcn.h>
 #import <mach/mach_time.h>
+#import <sys/socket.h>
+#import <sys/un.h>
 
 typedef int (*ConnFn)(void);
 typedef CFArrayRef (*MDSFn)(int);
@@ -235,8 +237,152 @@ static void moveWindowsToSpace(NSArray *wids, uint64_t sid) {
     Class opCls = NSClassFromString(@"SLSBridgedMoveWindowsToManagedSpaceOperation");
     id (*initFn)(id, SEL, id, uint64_t) = (id(*)(id,SEL,id,uint64_t))objc_msgSend;
     id op = initFn(((id(*)(id,SEL))objc_msgSend)(opCls, sel_registerName("alloc")),
-                   sel_registerName("initWithWindows:spaceID:"), wids, sid);
+                    sel_registerName("initWithWindows:spaceID:"), wids, sid);
     bridgedOp(op);
+}
+
+// --- scripting addition client ---
+// the payload inside the Dock serves /tmp/spacetool-sa_$USER.socket; only
+// it can write window tag bit 11 (onAllWorkspaces)
+enum { OP_HELLO = 1, OP_STICKY_SET = 2, OP_STICKY_CLEAR = 3, OP_STICKY_QUERY = 4 };
+
+static int saConnect(void) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof a);
+    a.sun_family = AF_UNIX;
+    const char *u = getenv("USER");
+    snprintf(a.sun_path, sizeof a.sun_path, "/tmp/spacetool-sa_%s.socket", u ?: "unknown");
+    if (connect(fd, (struct sockaddr *)&a, sizeof a) < 0) { close(fd); return -1; }
+    return fd;
+}
+static BOOL saReadN(int fd, void *buf, size_t n) {
+    uint8_t *p = buf;
+    while (n) { ssize_t r = read(fd, p, n); if (r <= 0) return NO; p += r; n -= r; }
+    return YES;
+}
+static BOOL saWriteN(int fd, const void *buf, size_t n) {
+    const uint8_t *p = buf;
+    while (n) { ssize_t w = write(fd, p, n); if (w <= 0) return NO; p += w; n -= w; }
+    return YES;
+}
+// HELLO: reply is u8 version + u32 symbol mask
+static int saHello(int32_t *version, uint32_t *mask) {
+    int fd = saConnect();
+    if (fd < 0) return -1;
+    uint8_t op = OP_HELLO;
+    if (!saWriteN(fd, &op, 1)) { close(fd); return -1; }
+    uint8_t rep[5];
+    if (!saReadN(fd, rep, sizeof rep)) { close(fd); return -1; }
+    close(fd);
+    *version = rep[0];
+    memcpy(mask, rep + 1, 4);
+    return 0;
+}
+// SET/CLEAR/QUERY: reply is i32 CGError + u64 tags after
+static int64_t saStickyOp(uint8_t op, uint32_t wid, int32_t *err) {
+    int fd = saConnect();
+    if (fd < 0) return -1;
+    uint8_t msg[5] = { op };
+    memcpy(msg + 1, &wid, 4);
+    if (!saWriteN(fd, msg, sizeof msg)) { close(fd); return -1; }
+    uint8_t rep[12];
+    if (!saReadN(fd, rep, sizeof rep)) { close(fd); return -1; }
+    close(fd);
+    memcpy(err, rep, 4);
+    uint64_t tags;
+    memcpy(&tags, rep + 4, 8);
+    return (int64_t)tags;
+}
+
+static int saNotLoaded(const char *verb) {
+    fprintf(stderr, "%s: scripting addition not loaded. run:\n"
+                    "    sudo make install-sa && sudo ./loadsa\n"
+                    "    (needs the csrutil relaxations and the -arm64e_preview_abi"
+                    " boot-arg, see SA-PLAN.md)\n", verb);
+    return 1;
+}
+
+// frontmost onscreen layer-0 window >= 120x120; an app query scopes to that app
+static NSDictionary *pickStickTarget(NSString *query) {
+    NSArray *list = CFBridgingRelease(CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+    pid_t pid = 0;
+    if (query.length) {
+        NSString *q = query.lowercaseString;
+        for (NSRunningApplication *a in [[NSWorkspace sharedWorkspace] runningApplications]) {
+            if (a.activationPolicy != NSApplicationActivationPolicyRegular) continue;
+            NSString *n = a.localizedName.lowercaseString;
+            if ([n isEqualToString:q]) { pid = a.processIdentifier; break; }
+        }
+        if (!pid) for (NSRunningApplication *a in [[NSWorkspace sharedWorkspace] runningApplications]) {
+            if (a.activationPolicy != NSApplicationActivationPolicyRegular) continue;
+            NSString *n = a.localizedName.lowercaseString;
+            if ([n hasPrefix:q] || [n containsString:q]) { pid = a.processIdentifier; break; }
+        }
+        if (!pid) return nil;
+    }
+    for (NSDictionary *w in list) {
+        if ([w[(id)kCGWindowLayer] intValue] != 0) continue;
+        if (pid && [w[(id)kCGWindowOwnerPID] intValue] != pid) continue;
+        CGRect b; CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)w[(id)kCGWindowBounds], &b);
+        if (b.size.width < 120 || b.size.height < 120) continue;
+        return w;
+    }
+    return nil;
+}
+
+static int cmdStick(NSString *query, BOOL on) {
+    const char *verb = on ? "stick" : "unstick";
+    NSDictionary *w = pickStickTarget(query);
+    if (!w) {
+        fprintf(stderr, "%s: no window%s%s\n", verb, query.length ? " for \"" : "",
+                query.length ? query.UTF8String : "");
+        return 1;
+    }
+    uint32_t wid = [w[(id)kCGWindowNumber] intValue];
+    const char *owner = [w[(id)kCGWindowOwnerName] description].UTF8String;
+    int32_t err = 0;
+    int64_t tags = saStickyOp(on ? OP_STICKY_SET : OP_STICKY_CLEAR, wid, &err);
+    if (tags < 0) return saNotLoaded(verb);
+    BOOL bit = (tags >> 11) & 1;
+    if (err == 0 && bit == on) {
+        printf("%s window %u (%s): %s\n", on ? "stuck" : "unstuck", wid, owner,
+               on ? "appears on all spaces" : "back on its own space");
+        return 0;
+    }
+    if (err == 0)
+        fprintf(stderr, "%s: the window server ignored the tag write (bit11 %lld)\n",
+                verb, (long long)bit);
+    else
+        fprintf(stderr, "%s: CGError %d\n", verb, err);
+    return 1;
+}
+
+static int cmdStickList(void) {
+    int32_t version = 0;
+    uint32_t mask = 0;
+    if (saHello(&version, &mask) < 0) return saNotLoaded("stick list");
+    if (!(mask & 4)) { fprintf(stderr, "stick list: payload cannot read tags\n"); return 1; }
+    NSArray *list = CFBridgingRelease(CGWindowListCopyWindowInfo(0, kCGNullWindowID));
+    int found = 0;
+    for (NSDictionary *w in list) {
+        if ([w[(id)kCGWindowLayer] intValue] != 0) continue;
+        CGRect b; CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)w[(id)kCGWindowBounds], &b);
+        if (b.size.width < 120 || b.size.height < 120) continue;
+        uint32_t wid = [w[(id)kCGWindowNumber] intValue];
+        int32_t err = 0;
+        int64_t tags = saStickyOp(OP_STICKY_QUERY, wid, &err);
+        if (tags < 0) { fprintf(stderr, "stick list: payload went away\n"); return 1; }
+        if ((tags >> 11) & 1) {
+            printf("%-28s window %u\n",
+                   [w[(id)kCGWindowOwnerName] description].UTF8String, wid);
+            found++;
+        }
+    }
+    if (!found) printf("no sticky windows\n");
+    return 0;
 }
 
 // The Dock owns the space list. SLSSpaceCreate/Destroy exist but leave the
@@ -658,6 +804,11 @@ int main(int argc, char **argv) {
     if ([mode isEqualToString:@"switch"])  return arg.length ? cmdSwitch(arg) : cmdList();
     if ([mode isEqualToString:@"bring"])   return arg.length ? cmdBring(arg) : 2;
     if ([mode isEqualToString:@"send"])    return arg.length ? cmdSend(arg) : 2;
+    if ([mode isEqualToString:@"stick"]) {
+        if ([arg isEqualToString:@"list"]) return cmdStickList();
+        return cmdStick(arg, YES);
+    }
+    if ([mode isEqualToString:@"unstick"])  return cmdStick(arg, NO);
     if ([mode isEqualToString:@"create"])  return cmdCreate(arg);
     if ([mode isEqualToString:@"rm"])      return arg.length ? cmdRemove(arg) : 2;
     if ([mode isEqualToString:@"layout"]) {
@@ -667,7 +818,8 @@ int main(int argc, char **argv) {
         return 2;
     }
     fprintf(stderr, "usage: spacetool current|list|set <name>|switch <query>"
-                    "|bring <app>|send <space>|create [name]|rm <space>"
+                    "|bring <app>|send <space>|stick [app]|unstick [app]"
+                    "|stick list|create [name]|rm <space>"
                     "|layout save|restore\n");
     return 2;
   }

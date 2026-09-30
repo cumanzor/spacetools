@@ -13,6 +13,9 @@ spacename set comms  # name the space you are on (empty name clears)
 sw comm              # switch to space by name prefix or number
 bring messages       # move an app's windows to this space and focus it
 send comms           # push the focused window to another space, stay put
+stick                # focused window appears on every space (not the whole app)
+unstick              # ... and back
+stick list           # windows currently on all spaces
 
 spacename create dev      # add a desktop at the end, optionally named
 spacename rm dev          # remove a space; its windows merge to a neighbor
@@ -47,6 +50,23 @@ ordinal first (so `sw 1` goes to Desktop 1 even when some space is named
 ordinal as a fallback for queries like `2fa` that only start with digits. `sw` verifies the switch actually landed before
 returning, so it exits non-zero if the Dock ignored it (see Setup). All commands
 exit 0 on success, 1 on a miss, and 2 on bad usage.
+
+`stick` / `unstick` act on the focused window (or the focused window of a
+named app) and need the SpaceToolSA payload running inside the Dock, because
+only the Dock's connection can write the on-all-spaces window tag
+(docs/window-on-all-spaces.md). Setup and the SIP prerequisite live in
+SA-PLAN.md:
+
+```sh
+sudo make install-sa   # build + install the payload bundle (needs sudo)
+sudo nvram boot-args="-arm64e_preview_abi" && sudo reboot   # once, see SA-PLAN.md
+sudo ./loadsa          # inject into the running Dock (arm64e needs the boot-arg)
+spacetool stick
+```
+
+Without the payload, `stick` exits 1 with the install hint; per-app assignment
+(the native "All Desktops") remains available with no SIP changes through the
+bridge op if ever needed as a stopgap.
 
 `send` takes the frontmost window, which it finds by asking for onscreen windows
 (they come back front to back, and "onscreen" already means the current space)

@@ -1,3 +1,93 @@
+[2026-09-30 03:58:49 UTC] [spacetool/Phase 1.5: sudoers-pinned auto re-injection after every Dock restart]
+[Attempt #1 for this feature, live-verified on 27.0 (26A428); reboot item pending user eyes]
+[Files Changed]
+- loadsa.m - idempotent: payloadActive() HELLO-checks
+  /tmp/spacetool-sa_<user>.socket before injecting (SUDO_USER with USER
+  fallback, since sudo resets USER to root; 250ms SO_RCVTIMEO so a hung
+  payload cannot hang the injector). Re-runs of the pinned binary are now
+  no-ops ("payload already active in Dock (pid N)", exit 0) instead of
+  spawning a fresh remote thread per call.
+- Makefile - refresh-sa target: re-bundles SpaceTool with the fresh loadsa
+  (via BUNDLE's new 3rd argument), then regenerates
+  /private/etc/sudoers.d/spacetools-sa: <whoami> ALL=(root) NOPASSWD:
+  sha256:<hash of bundle loadsa> <bundle path> "" (no args allowed), written
+  through /tmp + visudo -c validation + sudo install -o root -g wheel -m 0440
+  (sudo only wraps that write; target refuses a root run because codesign
+  needs the login keychain). install-sa = sa + refresh-sa + osax copy +
+  sudo -n load (one-shot full setup). install: all loadsa + BUNDLE copies
+  loadsa into SpaceTool.app before its codesign. uninstall-sa also drops the
+  sudoers pin and the bundle loadsa.
+- spacebadge.m - Dock-pid watch on the existing 300ms tick: static dockPidSeen;
+  on 0->pid (agent start/boot) or pid change, reinjectSA(pid) dispatches to a
+  utility queue: skips if no bundle loadsa, waits for isFinishedLaunching
+  (up to 10s at 100ms), settles ~1s, bails if a newer Dock pid superseded it,
+  HELLO-checks (already alive = silent return), then NSTask /usr/bin/sudo -n
+  <bundle loadsa> with stdout+stderr piped. Result logged via os_log with
+  %{public}s on failure / NSLog on success (launchd sends agent stderr to
+  /dev/null, so fprintf was invisible; NSLog strings other than the piped
+  output render fine, the piped sudo stderr needed %{public}s to escape
+  <private> redaction).
+- spacetool.m - saNotLoaded hint now points at the phase 1.5 world (SpaceBadge
+  re-injects; manual fix is make refresh-sa or sudo -n the pinned loadsa).
+- README.md, SA-PLAN.md - 1.2 marked landed with the shape + acceptance
+  results; 1.4 target list updated; phase 1.5 acceptance appended to 1.5.
+[Codesign facts established by experiment (they shaped the design)]
+- A bundle seal DOES cover extra MacOS/ binaries: copying a file into MacOS/
+  after signing breaks verify --deep --strict ("a sealed resource is missing
+  or invalid"), so the loadsa cp must precede the app's codesign (BUNDLE).
+- The outer re-sign never rewrites nested MacOS/ binaries (sha256 stayed
+  identical across two --force identity re-signs; nested file keeps its clang
+  adhoc signature). Therefore plain make install never invalidates the
+  sudoers pin; only a loadsa rebuild (source/toolchain change) does.
+- loadsa rebuilds are byte-deterministic for an unchanged toolchain (rm +
+  make loadsa reproduced the same sha256), so the pin only goes stale on a
+  real change, and refresh-sa is the regen step for exactly that.
+[What was verified live]
+- refresh-sa end to end (via a SUDO_ASKPASS osascript dialog for the one sudo
+  write): visudo "parsed OK", file landed 0440 root:wheel.
+- Acceptance 1: sudo -n ~/Applications/SpaceTool.app/Contents/MacOS/loadsa
+  from any terminal, passwordless (idempotent no-op when already loaded).
+- Acceptance 2: killall Dock x4 across the session; every new Dock pid
+  (4548 agent-start, 24007, 25007, 26179) was auto re-injected within ~2s
+  of finishing launch; socket answers HELLO; stick/unstick/stick list
+  roundtrips on the re-injected payload.
+- Acceptance 5 (stale hash, simulated by appending one byte to the bundle
+  loadsa, which is what a stale pin denies): sudo -n denies in ~12ms (no
+  prompt, no hang), SpaceBadge logs once per restart "[spacebadge] sa
+  re-inject failed (sudo exit 1): sudo: a password is required (stale
+  sudoers hash? run make refresh-sa)", stick degrades to the hint + exit 1.
+  Recovery: make install re-copies the repo loadsa (self-heal; seal restored
+  by the same re-sign), next Dock restart auto re-injected.
+- Acceptance 4 (light): the pin survived three make install re-signs and
+  byte-identical rebuilds; refresh-sa itself ran on a freshly rebuilt loadsa
+  (the idempotence change) and every subsequent sudo -n used that new hash.
+[The sudoers pin semantics worth remembering]
+- sudo hashes the whole file (adhoc clang signature included) and matches it
+  against the sha256 in the line; the nested binary's own signature plays no
+  role for sudo, only the seal fact above does for bundle integrity.
+- The pin is narrow: sudo -n on anything but that exact file still prompts
+  (verified: sudo -n cat was denied), so a changed loadsa fails loud, not
+  open.
+[Possible Ripple Effects]
+- sudoers.d/spacetools-sa grants root execution of exactly one file to
+  carlos; a hash mismatch disables it (fail-closed).
+- SpaceBadge spawns sudo -n once per Dock pid change (and once per agent
+  start when the payload is dead); a failed attempt is logged, not retried,
+  until the next pid change or agent restart.
+- A loadsa.m edit now requires make refresh-sa afterwards (or auto re-inject
+  silently stops working; stick falls back to the hint, never a silent no-op).
+[Testing Notes]
+- Remaining unverified: reboot persistence (SA-PLAN 1.5 item 3, user eyes;
+  the 0->pid path at login covers it in code, agent is RunAtLoad) and
+  multi-display behavior of a stuck window (carried over from phase 1).
+- The payload's NSLog visibility note from the handoff still stands: use
+  Console.app filtered on the process; the [spacebadge] lines are visible in
+  `log show --predicate 'process == "SpaceBadge" AND eventMessage CONTAINS
+  "[spacebadge]"'`.
+- Deferred polish (tracked): Raycast stick/unstick script commands in
+  ~/Documents/scripts/Raycast/ (send.sh shape), and a `spacetool load-sa`
+  verb wrapping the pinned loadsa.
+
 [2026-09-30 03:12:23 UTC] [spacetool/Phase 1 live-verified: injection, stick, unstick, list; no osax auto-load on Dock restart]
 [Attempt #1 for this verification; build was the 2026-09-30 02:49:45 entry below]
 [Files Changed]

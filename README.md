@@ -58,9 +58,8 @@ only the Dock's connection can write the on-all-spaces window tag
 SA-PLAN.md:
 
 ```sh
-make install-sa        # build + sign (as you) + sudo-copy the bundle
+make install-sa        # payload + sudoers-pinned injector + load it now
 sudo nvram boot-args="-arm64e_preview_abi" && sudo reboot   # once, see SA-PLAN.md
-sudo ./loadsa          # inject into the running Dock (arm64e needs the boot-arg)
 spacetool stick
 ```
 
@@ -68,9 +67,12 @@ Without the payload, `stick` exits 1 with the install hint; per-app assignment
 (the native "All Desktops") remains available with no SIP changes through the
 bridge op if ever needed as a stopgap.
 
-The payload dies with the Dock: after a Dock restart (including a reboot),
-re-inject with `sudo ./loadsa` before `stick` works again. The sudoers-pinned
-auto re-inject is the remaining phase 1.5 item in SA-PLAN.md.
+The payload dies with the Dock, but re-injection is automatic now: the injector
+lives at `~/Applications/SpaceTool.app/Contents/MacOS/loadsa`, pinned by a
+sha256 sudoers entry (`make refresh-sa` regenerates it), and SpaceBadge watches
+the Dock's pid and re-runs the pinned loadsa after every Dock restart. After a
+rebuild that touches `loadsa.m`, re-run `make refresh-sa` or the pin goes stale
+(SpaceBadge logs the sudo denial, `stick` falls back to the hint).
 
 `send` takes the frontmost window, which it finds by asking for onscreen windows
 (they come back front to back, and "onscreen" already means the current space)
@@ -87,6 +89,12 @@ It also takes `1`-`9` while Mission Control is open and switches to that space.
 The key tap is created disabled and only armed between the MC-open and MC-close
 edges, so it is inert the rest of the time. This needs Accessibility; without it
 `CGEventTapCreate` returns NULL and only this feature is lost.
+
+SpaceBadge also watches the Dock's pid on its 300ms tick and re-injects the
+SA payload after every Dock restart (it waits for the Dock to finish launching,
+settles ~1s, runs `sudo -n` on the pinned loadsa, then HELLO-checks the socket).
+Failures are logged once per restart and visible via
+`log show --predicate 'process == "SpaceBadge"'`.
 
 Cadence: Mission Control state is polled every 300ms, and while MC is open the
 strip is rebuilt on every poll so that reordering spaces inside it takes effect

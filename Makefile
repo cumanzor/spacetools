@@ -5,6 +5,8 @@ LABEL = dev.umanzor.spacebadge
 AGENT = $(HOME)/Library/LaunchAgents/$(LABEL).plist
 SA = /Library/ScriptingAdditions/spacetools.osax
 SADIR = spacetools.osax
+LOADSA = $(APPS)/SpaceTool.app/Contents/MacOS/loadsa
+SUDOERS = /private/etc/sudoers.d/spacetools-sa
 
 all: spacetool spacebadge
 
@@ -26,7 +28,24 @@ loadsa: loadsa.m
 
 sa: spacetoosa loadsa
 
-install-sa: sa
+# the sudoers line pins the bundle loadsa by sha256 (yabai's pattern); sudo
+# only ever runs that exact byte-for-byte binary, so every loadsa rebuild must
+# regenerate the pin or sudo -n silently denies and re-injection stops
+refresh-sa: loadsa spacetool
+	@if [ "$$(id -u)" = 0 ]; then \
+	  echo "fatal: run refresh-sa as yourself; sudo only wraps the install below" >&2; \
+	  echo "       (codesign needs your login keychain; root cannot sign)" >&2; exit 1; fi
+	$(call BUNDLE,SpaceTool,spacetool,loadsa)
+	@set -e; \
+	H=$$(shasum -a 256 $(LOADSA) | cut -d' ' -f1); \
+	{ echo "# spacetools sa injector pin (managed by make refresh-sa; regenerate after every loadsa rebuild)"; \
+	  printf '%s ALL=(root) NOPASSWD: sha256:%s %s ""\n' "$$(whoami)" "$$H" "$(LOADSA)"; } > /tmp/spacetools-sudoers; \
+	visudo -c -f /tmp/spacetools-sudoers; \
+	sudo install -o root -g wheel -m 0440 /tmp/spacetools-sudoers $(SUDOERS); \
+	rm -f /tmp/spacetools-sudoers; \
+	echo "  sudoers pinned: $$(whoami) NOPASSWD sha256:$$H $(LOADSA)"
+
+install-sa: sa refresh-sa
 	@if [ "$$(id -u)" = 0 ]; then \
 	  echo "fatal: run install-sa as yourself; sudo only wraps the rm/cp below" >&2; \
 	  echo "       (codesign needs your login keychain; root cannot sign)" >&2; exit 1; fi
@@ -53,11 +72,15 @@ install-sa: sa
 	fi
 	sudo rm -rf $(SA)
 	sudo cp -r $(SADIR) $(SA)
-	@echo "  installed at $(SA). load with: sudo ./loadsa"
+	sudo -n $(LOADSA)
+	@echo "  installed at $(SA), sudoers pinned, payload loaded. stick works."
 
 uninstall-sa:
 	sudo rm -rf $(SA)
-	@echo "  removed $(SA) (the loaded payload dies with the Dock; killall Dock to drop it now)"
+	sudo rm -f $(SUDOERS)
+	rm -f $(LOADSA)
+	@echo "  removed $(SA), the sudoers pin and the bundle loadsa"
+	@echo "  (the loaded payload dies with the Dock; killall Dock to drop it now)"
 
 define BUNDLE
 	mkdir -p $(APPS)/$(1).app/Contents/MacOS
@@ -74,6 +97,7 @@ define BUNDLE
 	  '<key>LSUIElement</key><true/>' \
 	  '</dict></plist>' > $(APPS)/$(1).app/Contents/Info.plist
 	cp $(2) $(APPS)/$(1).app/Contents/MacOS/$(1)
+	$(foreach x,$(3),cp $(x) $(APPS)/$(1).app/Contents/MacOS/$(x);)
 	@set -e; \
 	if [ -f codesign.env ]; then . ./codesign.env; fi; \
 	IDENT="$${SPACETOOLS_CODESIGN_IDENTITY:--}"; OU="$${SPACETOOLS_TEAM_OU:-}"; \
@@ -90,8 +114,8 @@ define BUNDLE
 	fi
 endef
 
-install: all
-	$(call BUNDLE,SpaceTool,spacetool)
+install: all loadsa
+	$(call BUNDLE,SpaceTool,spacetool,loadsa)
 	$(call BUNDLE,SpaceBadge,spacebadge)
 	mkdir -p $(BIN)
 	printf '#!/bin/sh\nexec "$$HOME/Applications/SpaceTool.app/Contents/MacOS/SpaceTool" "$$@"\n' > $(BIN)/spacename
@@ -101,6 +125,8 @@ install: all
 	printf '#!/bin/sh\nexec "$$HOME/Applications/SpaceTool.app/Contents/MacOS/SpaceTool" stick "$$@"\n' > $(BIN)/stick
 	printf '#!/bin/sh\nexec "$$HOME/Applications/SpaceTool.app/Contents/MacOS/SpaceTool" unstick "$$@"\n' > $(BIN)/unstick
 	chmod +x $(BIN)/spacename $(BIN)/sw $(BIN)/bring $(BIN)/send $(BIN)/stick $(BIN)/unstick
+	@echo "  loadsa bundled at $(LOADSA)"
+	@echo "  (rebuilding loadsa.m? run make refresh-sa after, to re-pin the sudoers hash)"
 
 # bootout before bootstrap, never kickstart: launchd caches the old cdhash and
 # kickstart dies with OS_REASON_CODESIGNING once the signature changes.

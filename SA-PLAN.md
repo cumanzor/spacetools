@@ -100,20 +100,21 @@ Port yabai's loader mechanics (`src/scripting_addition` /
 `sudo yabai --load-sa`): task_for_pid on the Dock, write the payload path,
 remote thread that dlopens it. Needs root, so:
 
-- `make install-sa` writes a sudoers entry pinned to the installed binary's
-  sha256 (yabai's documented pattern):
-
-  ```sudoers
-  <user> ALL=(root) NOPASSWD: sha256:<sha256> <path>/SpaceTool --load-sa
-  ```
-
-- `--load-sa` idempotent: checks the socket answers HELLO first, injects
-  only if not. Prints symbol-resolution failures as errors.
-- Re-injection on Dock restart: SpaceBadge already polls the Dock every
-  300ms for Mission Control detection; add Dock-pid-change detection there
-  that shells the NOPASSWD load. (yabai users do this with a
-  `dock_did_restart` signal; we have a daemon already.) Execution detail
-  for this phase: ~/Desktop/spacetools-phase-1.5-handoff.md.
+- LANDED 2026-09-30, live-verified on 27.0. Design details and acceptance
+  results: `~/Desktop/spacetools-phase-1.5-handoff.md` (phase 1.5). Shape:
+  the injector is a standalone `loadsa` binary installed at
+  `~/Applications/SpaceTool.app/Contents/MacOS/loadsa` (a bundle seal covers
+  extra `MacOS/` binaries, but a re-sign never rewrites them, so plain
+  `make install` does not invalidate the pin), pinned by a sha256 sudoers
+  entry (`make refresh-sa` regenerates `/private/etc/sudoers.d/spacetools-sa`
+  after every loadsa rebuild; visudo-validated, root only wraps the write),
+  and SpaceBadge re-runs it via `sudo -n` on every Dock pid change. `loadsa`
+  itself HELLO-checks the socket first (SUDO_USER, since sudo resets USER),
+  so re-runs are no-ops.
+- `--load-sa` idempotence landed as the socket pre-check above.
+- Re-injection on Dock restart: landed in SpaceBadge (pid watch on the
+  existing 300ms tick; yabai users wire this as a `dock_did_restart` signal
+  by hand, we have a daemon already).
 
 ### 1.3 CLI verbs in `spacetool.m`
 
@@ -137,10 +138,14 @@ us the per-window precision the bridge cannot.
 - `sa`: build + bundle + codesign the .sa (needs `codesign.env`; refuse to
   build it adhoc, since the sudoers hash and Dock library validation both
   want a stable identity).
-- `install-sa`: sa + copy to `/Library/ScriptingAdditions/` + sudoers entry
-  + HELLO check.
-- `uninstall-sa`: remove bundle + sudoers entry (+ `killall Dock` note:
-  the payload dies with its host; nothing persistent remains).
+- `install-sa`: sa + refresh-sa + copy to `/Library/ScriptingAdditions/` +
+  `sudo -n` load (full one-shot).
+- `refresh-sa`: re-bundle SpaceTool with the fresh loadsa + regenerate the
+  sudoers pin (run after every loadsa rebuild; plain `make install` does not
+  invalidate the pin, since bundle re-signs never rewrite nested `MacOS/`
+  binaries).
+- `uninstall-sa`: remove bundle + sudoers pin + bundle loadsa (+ `killall
+  Dock` note: the payload dies with its host; nothing persistent remains).
 
 ### 1.5 Acceptance checklist (run with eyes, per the research doc's
 section 2: API reads lie for tagged windows)
@@ -161,6 +166,29 @@ Status 2026-09-30, live on 27.0 (26A428) with the relaxations above:
 6. NOT YET: reboot persistence (needs the sudoers re-inject from 1.2 first).
    Note the operational consequence of 5: reboot = Dock starts clean, so
    until 1.2 lands, stick commands after a reboot need `sudo ./loadsa`.
+
+Phase 1.5 (auto re-injection) status 2026-09-30, live on 27.0 (26A428):
+
+1. DONE: `sudo -n ~/Applications/SpaceTool.app/Contents/MacOS/loadsa` is
+   passwordless from any terminal (pin at /private/etc/sudoers.d/spacetools-sa,
+   0440 root:wheel, no args allowed).
+2. DONE: `killall Dock` (multiple runs; re-injects logged into pids 4548,
+   24007, 25007 and 26179) -> SpaceBadge re-injects within ~2s of the Dock
+   finishing launch, the socket answers HELLO, `stick` roundtrips. Failure
+   path also live-verified: a corrupted bundle loadsa (sha mismatch) ->
+   sudo -n denies in ~12ms, SpaceBadge logs "sa re-inject failed (sudo
+   exit 1): sudo: a password is required" once per restart, `stick` shows
+   the hint + exit 1, no hang.
+3. NOT YET (user): reboot. Everything is in place (LaunchAgent starts
+   SpaceBadge at login; Dock pid watch covers the boot case via the
+   0->pid transition); needs one eyes-on reboot to close.
+4. DONE: rebuild + refresh: refresh-sa re-pins (the running pin survived
+   byte-identical rebuilds and three `make install` re-signs; loadsa
+   rebuilds are byte-deterministic for an unchanged toolchain, so the pin
+   only goes stale on a real source/toolchain change).
+5. DONE: the stale-hash simulation above (restore was `make install`, which
+   re-copies the repo loadsa into the bundle; recovery re-injected
+   automatically on the next Dock restart).
 
 Also found live: `sudo make install-sa` signs as root and dies with
 errSecInternalComponent (root cannot reach the login keychain); the target

@@ -297,8 +297,10 @@ static int64_t saStickyOp(uint8_t op, uint32_t wid, int32_t *err) {
 }
 
 static int saNotLoaded(const char *verb) {
-    fprintf(stderr, "%s: scripting addition not loaded. run:\n"
-                    "    make install-sa && sudo ./loadsa\n"
+    fprintf(stderr, "%s: scripting addition not loaded. SpaceBadge should re-inject it\n"
+                    "    within seconds of a Dock restart; if it did not:\n"
+                    "      make refresh-sa        (re-pins the injector after a rebuild)\n"
+                    "      sudo -n ~/Applications/SpaceTool.app/Contents/MacOS/loadsa\n"
                     "    (needs the csrutil relaxations and the -arm64e_preview_abi"
                     " boot-arg, see SA-PLAN.md)\n", verb);
     return 1;

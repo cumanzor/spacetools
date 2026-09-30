@@ -12,6 +12,8 @@
 #import <ptrauth.h>
 #import <stdio.h>
 #import <string.h>
+#import <sys/socket.h>
+#import <sys/un.h>
 #import <unistd.h>
 
 kern_return_t (*_thread_convert_thread_state)(thread_act_t thread, int direction, thread_state_flavor_t flavor, thread_state_t in_state, mach_msg_type_number_t in_stateCnt, thread_state_t out_state, mach_msg_type_number_t *out_stateCnt);
@@ -85,6 +87,25 @@ static pid_t get_dock_pid(void) {
     return 0;
 }
 
+// sudo resets USER to root; the socket belongs to the invoking user
+static int payloadActive(void) {
+    const char *user = getenv("SUDO_USER") ?: getenv("USER");
+    if (!user) return 0;
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 250000 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof a);
+    a.sun_family = AF_UNIX;
+    snprintf(a.sun_path, sizeof a.sun_path, "/tmp/spacetool-sa_%s.socket", user);
+    if (connect(fd, (struct sockaddr *)&a, sizeof a) < 0) { close(fd); return 0; }
+    uint8_t op = 1, rep[5];   // OP_HELLO
+    int alive = write(fd, &op, 1) == 1 && read(fd, rep, sizeof rep) == (ssize_t)sizeof rep;
+    close(fd);
+    return alive;
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     int result = 1;
@@ -96,6 +117,10 @@ int main(int argc, char **argv) {
     pid_t pid = get_dock_pid();
 
     if (!pid) { fprintf(stderr, "loadsa: could not locate Dock pid\n"); return 1; }
+    if (payloadActive()) {
+        fprintf(stderr, "loadsa: payload already active in Dock (pid %d)\n", pid);
+        return 0;
+    }
     if (task_for_pid(mach_task_self(), pid, &task) != KERN_SUCCESS) {
         fprintf(stderr, "loadsa: no task port for Dock (pid %d). run as root"
                         " with Debugging Restrictions disabled\n", pid);

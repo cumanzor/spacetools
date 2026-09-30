@@ -2,6 +2,9 @@
 #import <Cocoa/Cocoa.h>
 #import <objc/message.h>
 #import <dlfcn.h>
+#import <os/log.h>
+#import <sys/socket.h>
+#import <sys/un.h>
 
 typedef int (*ConnFn)(void);
 typedef CFArrayRef (*MDSFn)(int);
@@ -112,6 +115,78 @@ static BOOL mcOpen(void) {
 static CFMachPortRef keyTap;
 static BOOL mcArmed;
 static int maxOrd;
+static pid_t dockPidSeen;
+
+// --- scripting addition re-injection ---
+// the Dock does not auto-load osax bundles, so the payload dies with every
+// Dock restart; when the pid changes, re-run the sudoers-pinned loadsa
+
+static NSString *loadsaPath(void) {
+    return [NSHomeDirectory() stringByAppendingPathComponent:
+        @"Applications/SpaceTool.app/Contents/MacOS/loadsa"];
+}
+
+static BOOL saHello(void) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return NO;
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 250000 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof a);
+    a.sun_family = AF_UNIX;
+    snprintf(a.sun_path, sizeof a.sun_path, "/tmp/spacetool-sa_%s.socket",
+             getenv("USER") ?: "unknown");
+    if (connect(fd, (struct sockaddr *)&a, sizeof a) < 0) { close(fd); return NO; }
+    uint8_t op = 1, rep[5];   // OP_HELLO
+    BOOL ok = write(fd, &op, 1) == 1 && read(fd, rep, sizeof rep) == (ssize_t)sizeof rep;
+    close(fd);
+    return ok;
+}
+
+static pid_t dockPid(void) {
+    NSArray *list = [NSRunningApplication
+        runningApplicationsWithBundleIdentifier:@"com.apple.dock"];
+    return list.count ? [list[0] processIdentifier] : 0;
+}
+
+static BOOL dockFinishedLaunching(void) {
+    NSArray *list = [NSRunningApplication
+        runningApplicationsWithBundleIdentifier:@"com.apple.dock"];
+    return list.count == 1 && [list[0] isFinishedLaunching];
+}
+
+static void reinjectSA(pid_t pid) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        if (![[NSFileManager defaultManager] fileExistsAtPath:loadsaPath()]) {
+            NSLog(@"[spacebadge] no loadsa at %@, skipping sa re-inject", loadsaPath());
+            return;
+        }
+        for (int i = 0; i < 100 && !dockFinishedLaunching(); i++) usleep(100000);
+        if (dockPid() != pid) return;   // superseded by yet another Dock restart
+        usleep(1000000);                 // let the fresh Dock settle
+        if (dockPid() != pid) return;
+        if (saHello()) return;           // already alive, nothing to do
+        NSPipe *p = [NSPipe pipe];
+        NSTask *t = [NSTask new];
+        t.executableURL = [NSURL fileURLWithPath:@"/usr/bin/sudo"];
+        t.arguments = @[@"-n", loadsaPath()];   // -n: never hang on a prompt
+        t.standardOutput = p;
+        t.standardError = p;
+        [t launchAndReturnError:nil];
+        [t waitUntilExit];
+        NSString *out = [[[NSString alloc] initWithData:
+            [p.fileHandleForReading readDataToEndOfFile] encoding:NSUTF8StringEncoding]
+            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (t.terminationStatus != 0)
+            os_log(OS_LOG_DEFAULT, "[spacebadge] sa re-inject failed (sudo exit %d): %{public}s"
+                   " (stale sudoers hash? run make refresh-sa)",
+                   t.terminationStatus, out.length ? out.UTF8String : "no output");
+        else if (saHello())
+            NSLog(@"[spacebadge] sa re-injected into Dock (pid %d)", pid);
+        else
+            NSLog(@"[spacebadge] loadsa ran but the socket stayed dead");
+    });
+}
 
 static void postEscape(void) {
     CGEventRef d = CGEventCreateKeyboardEvent(NULL, 53, true);
@@ -330,6 +405,9 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
 }
 
 - (void)tick {
+    pid_t dp = dockPid();
+    if (dp && dp != dockPidSeen) reinjectSA(dp);
+    dockPidSeen = dp;
     BOOL mc = [self missionControlOpen];
     if (mc) [self showStrip];   // spaces get reordered while it is open, so keep up
     if (mc && !self.mcVisible) {

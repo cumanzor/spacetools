@@ -346,7 +346,16 @@ static int cmdStick(NSString *query, BOOL on) {
     uint32_t wid = [w[(id)kCGWindowNumber] intValue];
     const char *owner = [w[(id)kCGWindowOwnerName] description].UTF8String;
     int32_t err = 0;
-    int64_t tags = saStickyOp(on ? OP_STICKY_SET : OP_STICKY_CLEAR, wid, &err);
+    int64_t tags = 0;
+    if (on) {
+        // a display change collapses a stuck window back to its home space but
+        // keeps the tag bit, and SET with the bit already set rebuilds nothing,
+        // so always force the 0->1 transition (clear, then set)
+        saStickyOp(OP_STICKY_CLEAR, wid, &err);
+        tags = saStickyOp(OP_STICKY_SET, wid, &err);
+    } else {
+        tags = saStickyOp(OP_STICKY_CLEAR, wid, &err);
+    }
     if (tags < 0) return saNotLoaded(verb);
     BOOL bit = (tags >> 11) & 1;
     if (err == 0 && bit == on) {

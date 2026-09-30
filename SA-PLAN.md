@@ -167,9 +167,7 @@ Status 2026-09-30, live on 27.0 (26A428) with the relaxations above:
    Note the operational consequence of 5: reboot = Dock starts clean, so
    until 1.2 lands, stick commands after a reboot need `sudo ./loadsa`.
 
-Phase 1.5 (auto re-injection) status 2026-09-30, live on 27.0 (26A428):
-
-1. DONE: `sudo -n ~/Applications/SpaceTool.app/Contents/MacOS/loadsa` is
+Phase 1.5 (auto re-injection) status 2026-09-30, live on 27.0 (26A428):1. DONE: `sudo -n ~/Applications/SpaceTool.app/Contents/MacOS/loadsa` is
    passwordless from any terminal (pin at /private/etc/sudoers.d/spacetools-sa,
    0440 root:wheel, no args allowed).
 2. DONE: `killall Dock` (multiple runs; re-injects logged into pids 4548,
@@ -193,6 +191,18 @@ Phase 1.5 (auto re-injection) status 2026-09-30, live on 27.0 (26A428):
 Also found live: `sudo make install-sa` signs as root and dies with
 errSecInternalComponent (root cannot reach the login keychain); the target
 now refuses a root run, sudo only wraps the rm/cp.
+
+Multi-display wrinkle, answered live 2026-09-30 (was the unverified open
+item, now closed with a partial fix): plugging/unplugging a display rebuilds
+the space set and collapses a stuck window back to its home space while its
+tag bit stays set (the tag read then lies, per docs/window-on-all-spaces
+section 2). Worse, re-running stick could not repair it: SLSSetWindowTags
+with the bit already set rebuilds no membership. Fix in spacetool.m: stick
+always clears then sets, forcing the 0->1 transition; verified live (an
+iTerm window stranded after plugging a Sidecar display was repaired by
+clear+set, membership went from [7] to [6,7,8]). Deferred: a payload opcode
+that re-applies every stuck window's tag on SpaceBadge's
+screensChanged, so display changes need no re-stick at all.
 
 ## 2. Phase 2 (optional): instant `sw` through the SA
 

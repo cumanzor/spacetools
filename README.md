@@ -74,6 +74,12 @@ the Dock's pid and re-runs the pinned loadsa after every Dock restart. After a
 rebuild that touches `loadsa.m`, re-run `make refresh-sa` or the pin goes stale
 (SpaceBadge logs the sudo denial, `stick` falls back to the hint).
 
+Display changes have their own wrinkle: plugging/unplugging a monitor rebuilds
+the space set and collapses a stuck window back to its home space while its tag
+still reads as stuck, so `stick` clears and re-sets the bit to force the server
+to rebuild the membership. After a display change, re-run `stick` on windows
+that stopped showing everywhere; a fully automatic re-apply is future work.
+
 `send` takes the frontmost window, which it finds by asking for onscreen windows
 (they come back front to back, and "onscreen" already means the current space)
 and taking the first one at layer 0 bigger than 120x120. So it acts on whatever

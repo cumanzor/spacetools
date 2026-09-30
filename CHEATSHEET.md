@@ -121,6 +121,11 @@ the names file and the Accessibility entry.
   restart and auto re-inject failed. Usual cause is a stale sudoers pin after
   editing `loadsa.m` (`make refresh-sa` re-pins); otherwise check SpaceBadge's
   log (`log show --predicate 'process == "SpaceBadge"'`) for the sudo failure.
+- Plugged/unplugged a monitor and stuck windows stopped showing on other
+  spaces: the display change collapses a stuck window back to its home space
+  while its tag still reads as stuck. Running `stick` on it again repairs it
+  (it now clears and re-sets the bit, forcing the server to rebuild); a
+  fully automatic re-apply on display changes is future work.
 - Badge on wrong space or stacked badges: `make install-agent` to restart the
   daemon. `kickstart -k` works only if you have not rebuilt since it started.
 - `1`-`9` does nothing in Mission Control: SpaceBadge lost its Accessibility

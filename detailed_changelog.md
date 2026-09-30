@@ -1,3 +1,51 @@
+[2026-09-30 05:16:25 UTC] [spacetool/Fix: display changes collapse stuck windows; stick forces the tag transition]
+[Attempt #1, live-verified on 27.0 (26A428) with a Sidecar display plugged in]
+[The bug]
+- Plugging the Sidecar display rebuilt the space set (ids 1-5 -> 6/7/8, same
+  UUIDs so names survived) and every stuck window's space membership collapsed
+  back to its home space while its tag bit stayed set. The tag read then lies
+  (per docs/window-on-all-spaces section 2): stick list reported the window
+  stuck, CGSCopySpacesForWindows said [7] only, nothing rendered on the other
+  spaces.
+- The trap: re-running stick could NOT repair it. SLSSetWindowTags with the
+  bit already set changes nothing, so the server never rebuilds membership.
+  stick printed "appears on all spaces" (it only verifies the tag bit) while
+  the window stayed on one space. Fresh 0->1 writes on never-stuck windows
+  (Arc 499, iTerm 221) expanded membership fine, which isolated the
+  already-set-bit as the discriminator.
+[Files Changed]
+- spacetool.m - cmdStick: on-set now always sends STICKY_CLEAR then
+  STICKY_SET, forcing the 0->1 transition the server needs to rebuild
+  membership. The clear reply is ignored (harmless on a not-stuck window);
+  the set reply is verified as before. unstick unchanged (a single CLEAR is
+  its own transition).
+- README.md - display-change wrinkle documented in the stick section:
+  re-run stick after a display change; automatic re-apply is future work.
+- CHEATSHEET.md - when-it-breaks entry for monitor plug/unplug.
+- SA-PLAN.md - the multi-display open item answered with the collapse
+  behavior and the partial fix; automatic re-apply deferred.
+[What was verified live]
+- Direct socket probes (throwaway /tmp clients speaking the sa protocol):
+  STICKY_QUERY showed bit11=1 with tags 0x0100000100482801 on the stranded
+  window while CGSCopySpacesForWindows returned one space; STICKY_CLEAR
+  then STICKY_SET took membership to [6,7,8] and the window rendered on
+  every space again (user-verified by eye).
+- After the fix: re-running stick on an already-stuck Arc window reported
+  success with membership [7,6,8]; unstick collapsed it back to [8]; the
+  self-heal path is the same clear+set sequence that repaired the stranded
+  window by hand.
+[Notes for the follow-up (deferred)]
+- A payload opcode (enumerate layer-0 windows, re-apply bit 11 for those
+  that have it) triggered from SpaceBadge's screensChanged would make
+  display changes zero-touch. Needs a payload bump + reinstall (SA_PROTO_
+  VERSION stays 1 unless the opcode set changes semantics).
+- Membership cross-check in stick list (tag says stuck but membership is a
+  single space -> report it) would surface the lie instead of hiding it;
+  needs CGSCopySpacesForWindows linked into spacetool (dlsym SkyLight, same
+  as spacebadge).
+- The throwaway probes used here: /tmp/spaceprobe (CGS space membership),
+  /tmp/saclient (raw sa socket), /tmp/winbounds. Not kept.
+
 [2026-09-30 04:43:47 UTC] [spacetool/Raycast stick/unstick pair]
 [Files Changed]
 - ~/Documents/scripts/Raycast/stick.sh, unstick.sh - new. send.sh shape

@@ -252,7 +252,7 @@ static void moveWindowsToSpace(NSArray *wids, uint64_t sid) {
 // the payload inside the Dock serves /tmp/spacetool-sa_$USER.socket; only
 // it can write window tag bit 11 (onAllWorkspaces)
 enum { OP_HELLO = 1, OP_STICKY_SET = 2, OP_STICKY_CLEAR = 3, OP_STICKY_QUERY = 4,
-       OP_DUMP_CLASSES = 5, OP_FIND_SPACES = 6 };
+       OP_DUMP_CLASSES = 5, OP_FIND_SPACES = 6, OP_SPACE_FOCUS = 7 };
 
 static int saConnect(void) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -617,6 +617,54 @@ static int cmdSwitch(NSString *query) {
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
     return r;
 }
+// switch from inside the Dock: Spaces switchToUserSpace: with the id resolved
+// to an index there, no gesture. Experimental until it replaces the swipe in sw.
+static int cmdSAFocus(NSString *query) {
+    NSString *lock = [NSString stringWithFormat:@"/tmp/spacetool-switch_%s.lock", getenv("USER") ?: "unknown"];
+    int lfd = open(lock.fileSystemRepresentation, O_CREAT | O_RDWR, 0600);
+    if (lfd >= 0) flock(lfd, LOCK_EX);
+    NSDictionary *s = matchSpace(query);
+    if (!s) { fprintf(stderr, "sa-focus: no space matching \"%s\"\n", query.UTF8String); return 1; }
+    if ([s[@"current"] boolValue]) { printf("already on %s\n", label(s).UTF8String); return 0; }
+    int32_t version = 0;
+    uint32_t mask = 0;
+    if (saHello(&version, &mask) < 0) return saNotLoaded("sa-focus");
+    if (version < 4) {
+        fprintf(stderr, "sa-focus: payload is v%d, needs v4. make install-sa, then killall Dock\n", version);
+        return 1;
+    }
+    int fd = saConnect();
+    if (fd < 0) return saNotLoaded("sa-focus");
+    uint64_t sid = [s[@"sid"] unsignedLongLongValue];
+    uint8_t msg[9] = { OP_SPACE_FOCUS }, rep[12];
+    memcpy(msg + 1, &sid, 8);
+    uint64_t t0 = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+    if (!saWriteN(fd, msg, sizeof msg) || !saReadN(fd, rep, sizeof rep)) {
+        close(fd);
+        fprintf(stderr, "sa-focus: payload went away\n");
+        return 1;
+    }
+    close(fd);
+    int32_t err; int64_t index;
+    memcpy(&err, rep, 4);
+    memcpy(&index, rep + 4, 8);
+    double replyMs = (clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0) / 1e6;
+    static const char *why[] = { "no Spaces instance", "space id not in allUserSpaces", "Dock main queue timed out" };
+    if (err < 0) { fprintf(stderr, "sa-focus: %s\n", err >= -3 ? why[-err - 1] : "unknown error"); return 1; }
+    for (int i = 0; i < 100; i++) {
+        if ([currentSpaceOnDisplay(s[@"display"])[@"sid"] isEqual:s[@"sid"]]) {
+            printf("switched to %s (index %lld, %s, reply %.1fms, landed %.1fms)\n", label(s).UTF8String,
+                   (long long)index, err ? "Dock returned NO" : "Dock returned YES", replyMs,
+                   (clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0) / 1e6);
+            return 0;
+        }
+        usleep(10000);
+    }
+    fprintf(stderr, "sa-focus: Dock %s (index %lld) but CGS never reached %s\n",
+            err ? "returned NO" : "returned YES", (long long)index, label(s).UTF8String);
+    return 1;
+}
+
 static int cmdBring(NSString *query) {
     NSDictionary *cur = currentSpaceInfo();
     uint64_t space = [cur[@"sid"] unsignedLongLongValue];
@@ -867,6 +915,7 @@ int main(int argc, char **argv) {
     if ([mode isEqualToString:@"unstick"])  return cmdStick(arg, NO);
     if ([mode isEqualToString:@"sa-dump"])
         return cmdSAReport("sa-dump", OP_DUMP_CLASSES, 2, NULL, 0, "spacetool-sa-classes");
+    if ([mode isEqualToString:@"sa-focus"]) return arg.length ? cmdSAFocus(arg) : 2;
     if ([mode isEqualToString:@"sa-find"]) {
         uint8_t flags = [arg isEqualToString:@"--heap"] ? 1 : 0;
         return cmdSAReport("sa-find", OP_FIND_SPACES, 3, &flags, 1, "spacetool-sa-find");

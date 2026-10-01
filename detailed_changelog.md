@@ -1,3 +1,49 @@
+[2026-10-01 18:49:52 UTC] [spacetool/Feature: phase 2 step 3, SPACE_FOCUS through the Dock's own switchToUserSpace:]
+[Attempt #1]
+[What landed]
+- Payload protocol v4 with OP_SPACE_FOCUS (7, u64 space id). On the Dock
+  main queue (2s timeout): locateSpaces (cached, re-vetted through the
+  allocator; direct __DATA global, else DockAgent.spaces), resolve the id to
+  its index in allUserSpaces via ManagedSpace -spid, then
+  -[Spaces switchToUserSpace:index]. Reply i32 status (0 YES, 1 NO, -1 no
+  Spaces, -2 id not a user space, -3 main queue timeout) + i64 index.
+- `spacetool sa-focus <query>` (experimental verb; sw still swipes): same
+  matching and switch lock as sw, polls CGS, prints reply/landing times.
+[Static analysis, Dock 26A428, no process attached]
+- switchToUserSpace: IMP 0x100182234 (matched by method-list position +
+  type encoding against the runtime dump) is a thunk into Swift
+  0x100181fb8: off the expected thread it re-dispatches async and returns
+  NO; otherwise it walks DisplaySpaces, subtracting each display's user
+  space count, and calls 0x100226d7c(space, 0, 1, 0, 1). So the argument is
+  a 0-based index across displays; past the end is a no-op returning NO;
+  a negative index hits brk (Dock crash), which the id lookup makes
+  unreachable (no match = no call).
+[Live results]
+- First call: waivers, reply 5.2ms, CGS landed 385.7ms, Dock
+  DisplaySpaces.currentSpace = spid 162, menu bar and windows presented.
+- 1<->7 spans and mid jumps: 275-313ms each regardless of distance (one
+  slide, no intermediate spaces). Overlap at 30ms: both land, end state
+  follows lock order; the late reply waited on the busy main queue (115ms)
+  instead of being dropped.
+- Swipe `switch` by ordinal after six sa-focus calls: 4/4, Dock and CGS
+  agree, so sa-focus leaves no stale gesture state.
+[Finding: MC+digit misses are the swipe, not the payload]
+- MC+2 from 6 landed on 3: SpaceBadge launches the switch as soon as MC's
+  shield windows vanish, and the Dock is still finishing the dismissal, so
+  leading swipes are dropped. Scripted MC open, Escape, fire on close: swipe
+  0/6 (short by 2-4 or ignored outright), sa-focus 6/6.
+[Files Changed]
+- spacetoosa.m: locateSpaces/cachedSpaces, focusSpace, FOCUS_* codes,
+  opcode 7 (low word read as wid, high word after), SA_PROTO_VERSION 4.
+- spacetool.m: OP_SPACE_FOCUS, cmdSAFocus next to cmdSwitch, sa-focus verb.
+[Possible Ripple Effects]
+- None for sw/MC+digit yet; they still swipe. Wiring them to SPACE_FOCUS
+  with the swipe as fallback is the next step.
+[Testing Notes]
+- Fake host at .../Dock.app/Contents/MacOS/Dock with a __DATA Spaces
+  global (USER=satest): ids 39/7 -> indices 2/3 on the main thread,
+  unknown id -> -2 with no call. Then live as above.
+
 [2026-10-01 18:24:21 UTC] [spacetool/Feature: phase 2 step 2, locate the live Dock Spaces instance]
 [Attempt #1]
 [What landed]

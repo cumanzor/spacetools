@@ -31,8 +31,8 @@ typedef uint32_t (*IterWidFn)(CFTypeRef);
 typedef uint64_t (*IterTagsFn)(CFTypeRef);
 
 enum { OP_HELLO = 1, OP_STICKY_SET = 2, OP_STICKY_CLEAR = 3, OP_STICKY_QUERY = 4,
-       OP_DUMP_CLASSES = 5, OP_FIND_SPACES = 6 };
-#define SA_PROTO_VERSION 3
+       OP_DUMP_CLASSES = 5, OP_FIND_SPACES = 6, OP_SPACE_FOCUS = 7 };
+#define SA_PROTO_VERSION 4
 #define STICKY_BIT 11
 
 static int cid;
@@ -253,6 +253,67 @@ static int64_t findSpaces(const char *path, BOOL heap) {
     return (int64_t)d.length;
 }
 
+// the Dock's one Spaces instance: a direct global, else DockAgent.spaces
+static uintptr_t cachedSpaces;
+static uintptr_t locateSpaces(void) {
+    Class spacesC = objc_getClass("Spaces"), agentC = objc_getClass("DockCore.DockAgent");
+    if (!spacesC) return 0;
+    if (cachedSpaces && heapObjectOf(cachedSpaces, spacesC)) return cachedSpaces;
+    cachedSpaces = 0;
+    intptr_t slide = 0;
+    const struct mach_header_64 *mh = dockImage(&slide);
+    if (!mh) return 0;
+    Ivar agentSpaces = agentC ? class_getInstanceVariable(agentC, "spaces") : NULL;
+    const struct load_command *lc = (const void *)(mh + 1);
+    for (uint32_t i = 0; i < mh->ncmds; i++, lc = (const void *)((const uint8_t *)lc + lc->cmdsize)) {
+        if (lc->cmd != LC_SEGMENT_64) continue;
+        const struct segment_command_64 *seg = (const void *)lc;
+        if (strcmp(seg->segname, "__DATA")) continue;
+        const uintptr_t *p = (const uintptr_t *)(seg->vmaddr + slide);
+        for (uint64_t k = 0; k < seg->vmsize / sizeof(uintptr_t); k++) {
+            uintptr_t v = (uintptr_t)ptrauth_strip((void *)p[k], ptrauth_key_process_independent_data);
+            if (heapObjectOf(v, spacesC)) return cachedSpaces = v;
+            if (agentSpaces && heapObjectOf(v, agentC)) {
+                uintptr_t sp = *(uintptr_t *)(v + ivar_getOffset(agentSpaces));
+                if (heapObjectOf(sp, spacesC)) return cachedSpaces = sp;
+            }
+        }
+    }
+    return 0;
+}
+
+enum { FOCUS_OK = 0, FOCUS_REFUSED = 1, FOCUS_NO_SPACES = -1, FOCUS_NOT_FOUND = -2, FOCUS_TIMEOUT = -3 };
+
+// switchToUserSpace: takes a 0-based index into the user spaces across every
+// display and traps on a negative one, so resolve the id to an index here
+static int32_t focusSpace(uint64_t sid, int64_t *indexOut) {
+    __block int32_t res = FOCUS_TIMEOUT;
+    __block int64_t index = -1;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        uintptr_t sp = locateSpaces();
+        if (!sp) { res = FOCUS_NO_SPACES; dispatch_semaphore_signal(done); return; }
+        id spaces = (__bridge id)(void *)sp;
+        NSArray *all = ((id (*)(id, SEL))objc_msgSend)(spaces, sel_registerName("allUserSpaces"));
+        SEL spidSel = sel_registerName("spid");
+        res = FOCUS_NOT_FOUND;
+        for (NSUInteger i = 0; i < all.count; i++) {
+            id s = all[i];
+            if (![s respondsToSelector:spidSel]) continue;
+            if (((uint64_t (*)(id, SEL))objc_msgSend)(s, spidSel) != sid) continue;
+            index = (int64_t)i;
+            BOOL ok = ((BOOL (*)(id, SEL, long))objc_msgSend)(spaces,
+                sel_registerName("switchToUserSpace:"), (long)i);
+            res = ok ? FOCUS_OK : FOCUS_REFUSED;
+            break;
+        }
+        dispatch_semaphore_signal(done);
+    });
+    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+    *indexOut = index;
+    return res;
+}
+
 static BOOL readN(int fd, void *buf, size_t n) {
     uint8_t *p = buf;
     while (n) {
@@ -310,6 +371,19 @@ static void handle(int fd) {
         uint8_t r[12];
         memcpy(r, &err, 4);
         memcpy(r + 4, &tags, 8);
+        writeN(fd, r, sizeof r);
+        break;
+    }
+    case OP_SPACE_FOCUS: {
+        uint64_t sid = wid;
+        uint32_t hi = 0;
+        if (!readN(fd, &hi, 4)) goto out;
+        sid |= (uint64_t)hi << 32;
+        int64_t index = -1;
+        int32_t err = focusSpace(sid, &index);
+        uint8_t r[12];
+        memcpy(r, &err, 4);
+        memcpy(r + 4, &index, 8);
         writeN(fd, r, sizeof r);
         break;
     }

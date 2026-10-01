@@ -205,7 +205,16 @@ clear+set, membership went from [7] to [6,7,8]). Deferred: a payload opcode
 that re-applies every stuck window's tag on SpaceBadge's
 screensChanged, so display changes need no re-stick at all.
 
-## 2. Phase 2 (optional): instant `sw` through the SA
+## 2. Phase 2: `sw` through the SA
+
+Status 2026-10-01: DONE through step 4, live on 26A428. The route ended up
+pattern-free: the class dump (`sa-dump`) found yabai's dock_spaces as class
+`Spaces`, a scan of the Dock's __DATA for allocator-vetted pointers
+(`sa-find`) finds the one live instance, and instead of the ivar poke the
+payload calls the Dock's own `-[Spaces switchToUserSpace:]` (0-based
+user-space index; negative traps, so the id is resolved inside the Dock).
+`sw` and MC+digit use it, the swipe is the fallback. Details in
+detailed_changelog 2026-10-01. The plan text below is the original design.
 
 Port yabai's `do_space_focus`: find the `dock_spaces` pointer (one hex
 pattern per OS version), update the display's `_currentSpace` ivar, then
@@ -216,7 +225,10 @@ changelog entry reverse-engineered from outside. Cost: one pattern to
 maintain per macOS version. Keep the gesture path as fallback when the
 pattern misses.
 
-2026-09-30 note: the gesture path is now broken outright after display
+2026-09-30 note (corrected 2026-10-01: the swipe presented correctly in
+every test the next day, including DisplayLink off/on; what it does have is
+dropped swipes during MC dismissal and stale-base overshoot): the gesture
+path is now broken outright after display
 churn (synthesized fluid-touch switches stop running the desktop
 presentation; survives reboot, all display combos; not our regression,
 full elimination matrix in detailed_changelog 2026-09-30 16:52:59). That

@@ -118,13 +118,23 @@ Window moves go through the private SkyLight bridge class
 (`CGSAddWindowsToSpaces` etc.) are dead for foreign windows on macOS 26; they
 only work on windows you own.
 
-Space switches do **not** go through the bridge. `sw` synthesises the Dock's own
-swipe control event (a `CGEvent` with field 110 set to subtype 23, posted to
-`kCGSessionEventTap` once per space of travel) so that the Dock performs the
-switch. This is yabai's `space_manager_focus_space_using_gesture`, the fallback
-it uses when the scripting addition is unavailable. The velocity field is set
-absurdly high (9999) which skips the slide animation, so a multi-space jump is
-still fast.
+Space switches do **not** go through the bridge. When the scripting addition
+is loaded (payload v4+), `sw` and SpaceBadge's MC+digit send the target space id
+to the payload, which resolves it to its index in the Dock's `allUserSpaces` and
+calls the Dock's own `-[Spaces switchToUserSpace:]` on the Dock main queue. The
+Dock performs the switch itself, so its model, Mission Control and ctrl-arrow
+stay in step; one slide of ~275-310ms whatever the distance. The Dock queues a
+request that arrives mid-animation (right after Mission Control closes, or
+behind another switch) instead of dropping it.
+
+Without the payload, `sw` falls back to synthesising the Dock's own swipe
+control event (a `CGEvent` with field 110 set to subtype 23, posted to
+`kCGSessionEventTap` once per space of travel), yabai's
+`space_manager_focus_space_using_gesture`, and says so on stderr.
+`SPACETOOL_SWIPE=1` forces that path. The swipe is relative and the Dock drops
+swipes posted while it is still animating, so it is the weaker path: switches
+are serialized under a lock with a 250ms settle, and MC+digit through the swipe
+lands short when the jump starts during MC's dismissal.
 
 Gotchas learned the hard way:
 
@@ -148,8 +158,8 @@ Gotchas learned the hard way:
   the compositing but not the Dock. Let the Dock do the switch instead. An
   earlier changelog blamed this on "switching while MC is open"; that was wrong,
   the desync happens on every bridged switch and MC just makes it visible.
-- Mission Control swallows the Dock swipe gesture. A switch issued while MC is
-  up does nothing at all (it fails cleanly, it does not corrupt anything). To
+- Mission Control swallows the Dock swipe gesture (the swipe fallback only). A
+  switch issued while MC is up does nothing at all (it fails cleanly, it does not corrupt anything). To
   switch from inside MC you have to dismiss it and poll until it is really
   closed first, then switch.
 - An NSTextField sized by its superview's autoresizing mask will silently clip

@@ -600,69 +600,92 @@ static int cmdSet(NSString *name) {
            [s[@"ord"] intValue], name.UTF8String);
     return 0;
 }
-// the swipe is relative, so a second switch that reads the current space before
-// the first one lands adds its delta to a stale base and overshoots
-static int cmdSwitch(NSString *query) {
-    NSString *lock = [NSString stringWithFormat:@"/tmp/spacetool-switch_%s.lock", getenv("USER") ?: "unknown"];
-    int lfd = open(lock.fileSystemRepresentation, O_CREAT | O_RDWR, 0600);
-    if (lfd >= 0) flock(lfd, LOCK_EX);
-    NSDictionary *s = matchSpace(query);
-    if (!s) { fprintf(stderr, "sw: no space matching \"%s\"\n", query.UTF8String); return 1; }
-    if ([s[@"current"] boolValue]) { printf("already on %s\n", label(s).UTF8String); return 0; }
-    int r = switchToSpace(s);
-    if (!r) printf("switched to %s\n", label(s).UTF8String);
-    // cgs reports the new space before the dock takes another gesture; a queued
-    // switch posted in that gap is dropped, so hold the lock through it
-    fflush(stdout);
-    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
-    return r;
-}
-// switch from inside the Dock: Spaces switchToUserSpace: with the id resolved
-// to an index there, no gesture. Experimental until it replaces the swipe in sw.
-static int cmdSAFocus(NSString *query) {
-    NSString *lock = [NSString stringWithFormat:@"/tmp/spacetool-switch_%s.lock", getenv("USER") ?: "unknown"];
-    int lfd = open(lock.fileSystemRepresentation, O_CREAT | O_RDWR, 0600);
-    if (lfd >= 0) flock(lfd, LOCK_EX);
-    NSDictionary *s = matchSpace(query);
-    if (!s) { fprintf(stderr, "sa-focus: no space matching \"%s\"\n", query.UTF8String); return 1; }
-    if ([s[@"current"] boolValue]) { printf("already on %s\n", label(s).UTF8String); return 0; }
+// switch from inside the Dock: the payload resolves the space id to its
+// index and calls -[Spaces switchToUserSpace:], no gesture. Returns 0 once CGS
+// lands, 1 if the payload cannot take it (why says so), 2 if it took it but
+// CGS never got there
+static int saFocusSpace(NSDictionary *s, NSString **why, double *replyMs, double *landedMs, int64_t *indexOut) {
     int32_t version = 0;
     uint32_t mask = 0;
-    if (saHello(&version, &mask) < 0) return saNotLoaded("sa-focus");
-    if (version < 4) {
-        fprintf(stderr, "sa-focus: payload is v%d, needs v4. make install-sa, then killall Dock\n", version);
-        return 1;
-    }
+    if (saHello(&version, &mask) < 0) { *why = @"scripting addition not loaded"; return 1; }
+    if (version < 4) { *why = [NSString stringWithFormat:@"payload is v%d, needs v4", version]; return 1; }
     int fd = saConnect();
-    if (fd < 0) return saNotLoaded("sa-focus");
+    if (fd < 0) { *why = @"scripting addition not loaded"; return 1; }
     uint64_t sid = [s[@"sid"] unsignedLongLongValue];
     uint8_t msg[9] = { OP_SPACE_FOCUS }, rep[12];
     memcpy(msg + 1, &sid, 8);
     uint64_t t0 = clock_gettime_nsec_np(CLOCK_MONOTONIC);
-    if (!saWriteN(fd, msg, sizeof msg) || !saReadN(fd, rep, sizeof rep)) {
-        close(fd);
-        fprintf(stderr, "sa-focus: payload went away\n");
-        return 1;
-    }
+    BOOL io = saWriteN(fd, msg, sizeof msg) && saReadN(fd, rep, sizeof rep);
     close(fd);
-    int32_t err; int64_t index;
+    if (!io) { *why = @"payload went away"; return 1; }
+    int32_t err;
     memcpy(&err, rep, 4);
-    memcpy(&index, rep + 4, 8);
-    double replyMs = (clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0) / 1e6;
-    static const char *why[] = { "no Spaces instance", "space id not in allUserSpaces", "Dock main queue timed out" };
-    if (err < 0) { fprintf(stderr, "sa-focus: %s\n", err >= -3 ? why[-err - 1] : "unknown error"); return 1; }
+    memcpy(indexOut, rep + 4, 8);
+    *replyMs = (clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0) / 1e6;
+    if (err == -1) { *why = @"payload found no Spaces instance"; return 1; }
+    if (err == -2) { *why = @"space is not a user space in the Dock"; return 1; }
+    // a main-queue timeout may still run late, so wait for CGS either way
     for (int i = 0; i < 100; i++) {
         if ([currentSpaceOnDisplay(s[@"display"])[@"sid"] isEqual:s[@"sid"]]) {
-            printf("switched to %s (index %lld, %s, reply %.1fms, landed %.1fms)\n", label(s).UTF8String,
-                   (long long)index, err ? "Dock returned NO" : "Dock returned YES", replyMs,
-                   (clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0) / 1e6);
+            *landedMs = (clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0) / 1e6;
             return 0;
         }
         usleep(10000);
     }
-    fprintf(stderr, "sa-focus: Dock %s (index %lld) but CGS never reached %s\n",
-            err ? "returned NO" : "returned YES", (long long)index, label(s).UTF8String);
-    return 1;
+    *why = err == -3 ? @"Dock main queue timed out" : err ? @"Dock refused the switch"
+                     : @"Dock accepted the switch but CGS never got there";
+    return 2;
+}
+
+static int lockSwitch(void) {
+    NSString *lock = [NSString stringWithFormat:@"/tmp/spacetool-switch_%s.lock", getenv("USER") ?: "unknown"];
+    int lfd = open(lock.fileSystemRepresentation, O_CREAT | O_RDWR, 0600);
+    if (lfd >= 0) flock(lfd, LOCK_EX);
+    return lfd;
+}
+
+// payload first; the swipe is the fallback. The swipe is relative, so a second
+// switch reading the current space before the first lands would add its delta
+// to a stale base: the lock serializes them
+static int cmdSwitch(NSString *query) {
+    lockSwitch();
+    NSDictionary *s = matchSpace(query);
+    if (!s) { fprintf(stderr, "sw: no space matching \"%s\"\n", query.UTF8String); return 1; }
+    if ([s[@"current"] boolValue]) { printf("already on %s\n", label(s).UTF8String); return 0; }
+    if (!getenv("SPACETOOL_SWIPE")) {
+        NSString *why = nil;
+        double replyMs = 0, landedMs = 0;
+        int64_t index = -1;
+        int r = saFocusSpace(s, &why, &replyMs, &landedMs, &index);
+        if (r == 0) { printf("switched to %s\n", label(s).UTF8String); return 0; }
+        fprintf(stderr, "sw: %s, falling back to the swipe\n", why.UTF8String);
+        s = matchSpace(query);
+        if (!s) { fprintf(stderr, "sw: no space matching \"%s\"\n", query.UTF8String); return 1; }
+        if ([s[@"current"] boolValue]) { printf("already on %s\n", label(s).UTF8String); return 0; }
+    }
+    int r = switchToSpace(s);
+    if (!r) printf("switched to %s\n", label(s).UTF8String);
+    // cgs reports the new space before the dock takes another gesture; a queued
+    // swipe posted in that gap is dropped, so hold the lock through it
+    fflush(stdout);
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
+    return r;
+}
+
+// the payload path alone, with timings; no swipe fallback
+static int cmdSAFocus(NSString *query) {
+    lockSwitch();
+    NSDictionary *s = matchSpace(query);
+    if (!s) { fprintf(stderr, "sa-focus: no space matching \"%s\"\n", query.UTF8String); return 1; }
+    if ([s[@"current"] boolValue]) { printf("already on %s\n", label(s).UTF8String); return 0; }
+    NSString *why = nil;
+    double replyMs = 0, landedMs = 0;
+    int64_t index = -1;
+    int r = saFocusSpace(s, &why, &replyMs, &landedMs, &index);
+    if (r) { fprintf(stderr, "sa-focus: %s (index %lld)\n", why.UTF8String, (long long)index); return 1; }
+    printf("switched to %s (index %lld, reply %.1fms, landed %.1fms)\n", label(s).UTF8String,
+           (long long)index, replyMs, landedMs);
+    return 0;
 }
 
 static int cmdBring(NSString *query) {

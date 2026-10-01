@@ -1,3 +1,38 @@
+[2026-10-01 18:54:27 UTC] [spacetool/Feature: phase 2 step 4, sw and MC+digit switch through the payload]
+[Attempt #1]
+[What landed]
+- cmdSwitch tries the payload first (saFocusSpace: HELLO v4 gate, OP_SPACE_FOCUS,
+  then waits up to 1s for CGS to land, which also covers a late-running
+  main-queue timeout). On anything but a landing it prints
+  "sw: <why>, falling back to the swipe", re-resolves the target (the
+  current space may have moved) and swipes as before.
+- The 250ms post-landing settle now only follows a swipe; the payload path
+  does not need it (the Dock queues the next request).
+- SPACETOOL_SWIPE=1 forces the swipe for side-by-side checks.
+- sa-focus stays as the payload-only timing verb on the shared helper;
+  lockSwitch() factored out of both.
+- No payload change, no Dock restart: SpaceBadge's MC+digit already goes
+  through `SpaceTool switch <ord>`, so it picks this up as is.
+[Files Changed]
+- spacetool.m: saFocusSpace, lockSwitch, cmdSwitch (payload first, swipe
+  fallback), cmdSAFocus on the helper.
+- README.md: switch section rewritten (payload path, fallback, why the swipe
+  is weaker); MC-swallows-the-swipe gotcha scoped to the fallback.
+- CHEATSHEET.md: "falling back to the swipe" entry; gesture entry scoped.
+- SA-PLAN.md: phase 2 status block; the 2026-09-30 "broken outright" note
+  corrected (the swipe presented fine on 2026-10-01).
+[Possible Ripple Effects]
+- After a Dock restart, switches in the few seconds before SpaceBadge
+  re-injects take the swipe (with the stderr note).
+- MC+digit no longer depends on the swipe surviving MC's dismissal.
+[Testing Notes]
+- Scripted MC + digit (open MC, HID digit, SpaceBadge path): 8/8 including
+  full-span jumps (was 0/6 for the swipe fired on MC close).
+- Sequential by number and name 6/6; overlapping at 30ms 4/4.
+- Fallback: USER=nobody (no socket) -> "scripting addition not loaded,
+  falling back to the swipe", landed; SPACETOOL_SWIPE=1 landed; screenshot
+  after a payload switch shows menu bar, badge and windows.
+
 [2026-10-01 18:49:52 UTC] [spacetool/Feature: phase 2 step 3, SPACE_FOCUS through the Dock's own switchToUserSpace:]
 [Attempt #1]
 [What landed]

@@ -138,7 +138,11 @@ the names file and the Accessibility entry.
 - New display or big layout change: badges reposition ~1s after the screen
   settles, and again 2.5s later. If one is stuck offscreen after a dock/undock,
   that observer is the thing that broke.
-- `sw` prints "the Dock ignored the gesture": either Mission Control was open
+- `sw` prints "falling back to the swipe": the payload is not answering (Dock
+  just restarted, give SpaceBadge a few seconds) or is older than v4
+  (`make install-sa && killall Dock`). Switching still works, just through the
+  weaker swipe.
+- `sw` prints "the Dock ignored the gesture" (swipe fallback only): either Mission Control was open
   (it swallows the swipe gesture, so dismiss it first), or the caller lacks
   Accessibility. TCC attributes the event to whatever launched `sw`, so grant it
   to Raycast or your terminal, or to ~/Applications/SpaceTool.app if you are

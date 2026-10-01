@@ -11,6 +11,7 @@ spacename            # print current space name
 spacename list       # all spaces, current marked with *
 spacename set comms  # name the space you are on (empty name clears)
 sw comm              # switch to space by name prefix or number
+sw next              # one space right (prev = left), no wrap
 bring messages       # move an app's windows to this space and focus it
 send comms           # push the focused window to another space, stay put
 stick                # focused window appears on every space (not the whole app)

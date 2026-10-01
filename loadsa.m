@@ -26,7 +26,7 @@ extern int *__error(void);
 kern_return_t (*_thread_convert_thread_state)(thread_act_t thread, int direction, thread_state_flavor_t flavor, thread_state_t in_state, mach_msg_type_number_t in_stateCnt, thread_state_t out_state, mach_msg_type_number_t *out_stateCnt);
 
 static const char *payload_path =
-    "/Library/ScriptingAdditions/spacetools.osax/Contents/MacOS/spacetoosa";
+    "/Library/Application Support/spacetools/spacetools.osax/Contents/MacOS/spacetoosa";
 
 // shellcode v3, assembled from loadsa-shellcode.s (assembler-verified
 // encodings; keep the .s and the array in sync). the old yabai bytes

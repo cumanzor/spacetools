@@ -6,6 +6,7 @@
 |---|---|
 | `sw comm` | switch to the space named "comms" (prefix match) |
 | `sw 3` | switch to Desktop 3 |
+| `sw next` / `sw prev` | step one space right / left, stops at the ends (BTT hyper+E / hyper+Q) |
 | `bring messages` | pull Messages' windows to this space and focus them |
 | `send comms` | push the frontmost window to comms, stay where you are |
 | `stick` | pin the frontmost window to every space |
@@ -29,6 +30,7 @@ spacename              # name of the space you are on
 spacename list         # all spaces, * = current
 spacename set comms    # name current space ("" clears)
 sw comm                # switch by name prefix or number
+sw next / sw prev      # one space right / left, no wrap (left/right work too)
 bring spark            # move app windows here + focus (fuzzy app match)
 send comms             # push the focused window to another space, stay put
 stick                  # pin the focused window to all spaces

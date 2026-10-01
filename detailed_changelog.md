@@ -1,3 +1,53 @@
+[2026-10-01 23:41:29 UTC] [spacetool+loadsa/Feature: sw next/prev, payload out of ScriptingAdditions]
+[Attempt #1]
+[Files Changed]
+- spacetool.m matchSpace: "next"/"right" and "prev"/"left" resolve to the
+  space at ord +/-1 on the current space's display, checked before names (a
+  space literally named "next" is now unreachable by that word). No wrap: at
+  either end matchSpace returns the current space and cmdSwitch prints
+  "already on X", rc 0. Everything else (payload first, swipe fallback, the
+  switch lock) is the existing cmdSwitch path. Usage string updated.
+- loadsa.m payload_path and Makefile SA: /Library/Application
+  Support/spacetools/spacetools.osax. New SAROOT/OLDSA vars; install-sa
+  removes the old ScriptingAdditions copy, uninstall-sa removes both and the
+  empty dir. Paths are quoted ($(dir) would split on the space).
+- README.md, CHEATSHEET.md: next/prev lines.
+[Why the move]
+- OpenScripting enumerates /Library/ScriptingAdditions whenever any process
+  initializes AppleScript and complains about any bundle without an
+  OSAXHandlers dict ("cannot be used with the current OS because it has no
+  OSAXHandlers entry"). Reproduced with osascript -e 'return 1'. It landed
+  first in osascript output, which broke JSON parsing of BTT get_triggers.
+  The payload is never loaded through AppleScript (loadsa dlopens it by path
+  inside the Dock), so the folder bought nothing.
+- WindowManager is sandboxed and a sandbox profile could have allowed only
+  ScriptingAdditions, but WM injection is already dead for every path
+  (2026-10-01 21:04 entry), and the Dock is unsandboxed.
+[BTT]
+- Hyper+Q/E (preset tmp1, UUIDs 36FA5794-.../895E5093-...) were pointed at
+  SpaceTool switch prev/next via update_trigger, then reverted to predefined
+  113/114. switchToUserSpace: animates the Dock's normal slide, so a
+  one-space step looks identical to ctrl-arrow and only adds ~65ms of
+  process startup. The payload's wins are far jumps (one slide), post-MC
+  reliability and queueing, none of which apply to adjacent steps.
+[Possible Ripple Effects]
+- loadsa rebuilt, so the sudoers sha256 pin must be regenerated (install-sa
+  does it via refresh-sa); until then SpaceBadge re-injection fails after a
+  Dock restart.
+- The already-loaded Dock payload stays mapped from the old path until the
+  Dock restarts; the new path is only exercised after killall Dock.
+- Process startup is ~60-70ms per keypress; held keys queue on the switch
+  lock and each step reads the current space after taking it.
+[Testing Notes]
+- killall Dock: SpaceBadge re-injected in 2s, sa-status Dock v6 symbols
+  0x1f, vmmap shows spacetoosa mapped from /Library/Application
+  Support/spacetools; osascript no longer prints the OSAXHandlers warning.
+- make install-sa still exits 1: loadsa fails WindowManager (expected, EPERM)
+  and prints its dlerror pointer as a local string (garbage). Not fixed yet.
+- ./spacetool from the repo: next/next/prev/prev 1->2->3->2->1, prev on 1
+  and next on 6 answer "already on", left/right aliases, 6 rapid serial
+  steps ~355ms each with no skipped spaces.
+
 [2026-10-01 22:46:46 UTC] [spacetoosa+spacetool/Feature: phase 3 landed via the Dock, WM injection never needed]
 [Attempt #1]
 [What landed]

@@ -3,7 +3,11 @@ APPS = $(HOME)/Applications
 BIN = $(HOME)/.local/bin
 LABEL = dev.umanzor.spacebadge
 AGENT = $(HOME)/Library/LaunchAgents/$(LABEL).plist
-SA = /Library/ScriptingAdditions/spacetools.osax
+# outside /Library/ScriptingAdditions: OpenScripting scans that folder on every
+# AppleScript run and warns about any bundle without OSAXHandlers
+SAROOT = /Library/Application Support/spacetools
+SA = $(SAROOT)/spacetools.osax
+OLDSA = /Library/ScriptingAdditions/spacetools.osax
 SADIR = spacetools.osax
 LOADSA = $(APPS)/SpaceTool.app/Contents/MacOS/loadsa
 SUDOERS = /private/etc/sudoers.d/spacetools-sa
@@ -70,13 +74,15 @@ install-sa: sa refresh-sa
 	  echo "  codesign sa: $$IDENT"; \
 	  codesign --force -s "$$IDENT" --identifier dev.umanzor.spacetoosa $(SADIR); \
 	fi
-	sudo rm -rf $(SA)
-	sudo cp -r $(SADIR) $(SA)
+	sudo rm -rf "$(SA)" "$(OLDSA)"
+	sudo mkdir -p "$(SAROOT)"
+	sudo cp -r $(SADIR) "$(SA)"
 	sudo -n $(LOADSA)
 	@echo "  installed at $(SA), sudoers pinned, payload loaded. stick works."
 
 uninstall-sa:
-	sudo rm -rf $(SA)
+	sudo rm -rf "$(SA)" "$(OLDSA)"
+	-sudo rmdir "$(SAROOT)"
 	sudo rm -f $(SUDOERS)
 	rm -f $(LOADSA)
 	@echo "  removed $(SA), the sudoers pin and the bundle loadsa"

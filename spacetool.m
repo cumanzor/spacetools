@@ -59,6 +59,15 @@ static NSDictionary *currentSpaceInfo(void) {
 static NSDictionary *matchSpace(NSString *query) {
     NSArray *all = spaceInfos();
     NSString *q = query.lowercaseString;
+    // neighbors on the current display, no wrap: the last space's next is itself
+    int step = [@[@"next", @"right"] containsObject:q] ? 1 : [@[@"prev", @"left"] containsObject:q] ? -1 : 0;
+    if (step) {
+        NSDictionary *cur = currentSpaceInfo();
+        for (NSDictionary *s in all)
+            if ([s[@"display"] isEqualToString:cur[@"display"]] &&
+                [s[@"ord"] intValue] == [cur[@"ord"] intValue] + step) return s;
+        return cur;
+    }
     // a bare number is an ordinal before it is a name: "1" must not substring-
     // match a space named "messaging1", and the MC digit tap passes ordinals
     if (q.length && [q rangeOfCharacterFromSet:
@@ -1068,7 +1077,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: spacetool layout save|restore\n");
         return 2;
     }
-    fprintf(stderr, "usage: spacetool current|list|set <name>|switch <query>"
+    fprintf(stderr, "usage: spacetool current|list|set <name>|switch <query|next|prev>"
                     "|bring <app>|send <space>|stick [app]|unstick [app]"
                     "|stick list|create [name]|rm <space>"
                     "|layout save|restore\n");

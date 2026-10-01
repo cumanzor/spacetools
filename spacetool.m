@@ -252,7 +252,7 @@ static void moveWindowsToSpace(NSArray *wids, uint64_t sid) {
 // the payload inside the Dock serves /tmp/spacetool-sa_$USER.socket; only
 // it can write window tag bit 11 (onAllWorkspaces)
 enum { OP_HELLO = 1, OP_STICKY_SET = 2, OP_STICKY_CLEAR = 3, OP_STICKY_QUERY = 4,
-       OP_DUMP_CLASSES = 5 };
+       OP_DUMP_CLASSES = 5, OP_FIND_SPACES = 6 };
 
 static int saConnect(void) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -404,29 +404,31 @@ static int cmdStickList(void) {
     return 0;
 }
 
-static int cmdSADump(void) {
+// debug opcodes: the payload writes a report file and replies CGError + length
+static int cmdSAReport(const char *verb, uint8_t op, int need, const uint8_t *arg, size_t argLen,
+                       const char *file) {
     int32_t version = 0;
     uint32_t mask = 0;
-    if (saHello(&version, &mask) < 0) return saNotLoaded("sa-dump");
-    if (version < 2) {
-        fprintf(stderr, "sa-dump: payload is v%d, needs v2. make install-sa, then killall Dock\n", version);
+    if (saHello(&version, &mask) < 0) return saNotLoaded(verb);
+    if (version < need) {
+        fprintf(stderr, "%s: payload is v%d, needs v%d. make install-sa, then killall Dock\n",
+                verb, version, need);
         return 1;
     }
     int fd = saConnect();
-    if (fd < 0) return saNotLoaded("sa-dump");
-    uint8_t op = OP_DUMP_CLASSES, rep[12];
-    if (!saWriteN(fd, &op, 1) || !saReadN(fd, rep, sizeof rep)) {
+    if (fd < 0) return saNotLoaded(verb);
+    uint8_t rep[12];
+    if (!saWriteN(fd, &op, 1) || (argLen && !saWriteN(fd, arg, argLen)) || !saReadN(fd, rep, sizeof rep)) {
         close(fd);
-        fprintf(stderr, "sa-dump: payload went away\n");
+        fprintf(stderr, "%s: payload went away\n", verb);
         return 1;
     }
     close(fd);
     int32_t err; uint64_t len;
     memcpy(&err, rep, 4);
     memcpy(&len, rep + 4, 8);
-    if (err) { fprintf(stderr, "sa-dump: payload could not write the dump\n"); return 1; }
-    printf("/tmp/spacetool-sa-classes_%s.txt (%llu bytes)\n", getenv("USER") ?: "unknown",
-           (unsigned long long)len);
+    if (err) { fprintf(stderr, "%s: payload could not write the report\n", verb); return 1; }
+    printf("/tmp/%s_%s.txt (%llu bytes)\n", file, getenv("USER") ?: "unknown", (unsigned long long)len);
     return 0;
 }
 
@@ -863,7 +865,12 @@ int main(int argc, char **argv) {
         return cmdStick(arg, YES);
     }
     if ([mode isEqualToString:@"unstick"])  return cmdStick(arg, NO);
-    if ([mode isEqualToString:@"sa-dump"])  return cmdSADump();
+    if ([mode isEqualToString:@"sa-dump"])
+        return cmdSAReport("sa-dump", OP_DUMP_CLASSES, 2, NULL, 0, "spacetool-sa-classes");
+    if ([mode isEqualToString:@"sa-find"]) {
+        uint8_t flags = [arg isEqualToString:@"--heap"] ? 1 : 0;
+        return cmdSAReport("sa-find", OP_FIND_SPACES, 3, &flags, 1, "spacetool-sa-find");
+    }
     if ([mode isEqualToString:@"create"])  return cmdCreate(arg);
     if ([mode isEqualToString:@"rm"])      return arg.length ? cmdRemove(arg) : 2;
     if ([mode isEqualToString:@"layout"]) {

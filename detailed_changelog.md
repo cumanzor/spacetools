@@ -1,3 +1,43 @@
+[2026-10-01 18:24:21 UTC] [spacetool/Feature: phase 2 step 2, locate the live Dock Spaces instance]
+[Attempt #1]
+[What landed]
+- Payload protocol v3 with OP_FIND_SPACES (6, one flags byte; bit0 = heap
+  walk). Global scan: every pointer-sized value in the Dock image's
+  __DATA*/__AUTH* segments, accepted only when malloc_zone_from_ptr and
+  malloc_size vouch for a block big enough, then the isa compared under
+  ISA_CLASS_BITS (0x00007ffffffffff8, no ptrauth auth, no class deref)
+  against Spaces, DockCore.DockAgent, DockVisibility, DockBar; holders are
+  followed to their spaces ivar. Optional heap walk: force_lock every zone,
+  enumerate in-use ranges into a static array (no allocation while locked),
+  unlock. Each distinct Spaces gets its read-only getters (currentSpaces,
+  displays, allUserSpaces, detailedDescription) run on the Dock main queue
+  with a 2s timeout. Report at /tmp/spacetool-sa-find_$USER.txt.
+- `spacetool sa-find [--heap]`; sa-dump/sa-find share cmdSAReport (version
+  gate, CGError + length reply).
+- isa mask self-test on a fresh NSObject is the first line of every report.
+[Findings, live on 26A428]
+- Global __DATA+0x41bb0 (unslid 0x100409bb0) holds Spaces directly;
+  __DATA+0x41b48 holds DockCore.DockAgent (.spaces +64) and __DATA+0x41b78
+  DockBar (.spaces): all three resolve to the same instance.
+- Heap walk: 36259 blocks, exactly 1 Spaces, same address. 132ms round trip,
+  Dock pid unchanged.
+- _displaySpaces is a Swift ContiguousArrayStorage<AnyObject>; the Dock's
+  model (detailedDescription: one DisplaySpaces, displayUUID=Main, current
+  spid 7, 7 spaces in MC order) matches CGSCopyManagedDisplaySpaces.
+[Files Changed]
+- spacetoosa.m: mach-o/malloc/ptrauth imports, isaIs/heapObjectOf,
+  dockImage, heapScan/heapRecorder, describeOnMain, describeSpaces,
+  findSpaces, opcode 6 sharing the report reply path, SA_PROTO_VERSION 3.
+- spacetool.m: OP_FIND_SPACES, cmdSAReport replaces cmdSADump, sa-find verb.
+[Possible Ripple Effects]
+- --heap stalls Dock allocations for the walk (~100ms); off by default.
+- stick still works against any payload version (gates are per debug verb).
+[Testing Notes]
+- Smoke test before injecting: arm64e host with a fake Spaces class,
+  payload loaded under USER=satest (own socket); heap walk found both
+  instances in 3ms, main-queue getters answered, isa self-test ok.
+- Live: make install-sa + killall Dock, sa-find then sa-find --heap.
+
 [2026-10-01 05:13:19 UTC] [spacetool/Feature: phase 2 step 1, Dock class dump via the payload]
 [Attempt #1]
 [What landed]

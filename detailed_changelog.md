@@ -1,3 +1,40 @@
+[2026-10-01 05:13:19 UTC] [spacetool/Feature: phase 2 step 1, Dock class dump via the payload]
+[Attempt #1]
+[What landed]
+- Payload protocol v2 with OP_DUMP_CLASSES (5): walks objc_copyClassList,
+  keeps classes whose image is under /Dock.app/ (341 of 39075 on 26A428),
+  writes superclass, instance size, ivars (name, type, offset) and +/-
+  methods (selector, type encoding) to /tmp/spacetool-sa-classes_$USER.txt
+  (0600). Read-only: no Dock method is called, no instance touched.
+- `spacetool sa-dump` triggers it; HELLO version gate refuses a v1 payload
+  with the reinstall hint instead of hanging.
+[Findings, live on 26A428]
+- yabai's dock_spaces is class `Spaces : NSObject`: _displaySpaces +24,
+  plus currentSpaceForDisplay:, currentSpaceForDisplayUUID:,
+  spacesForDisplay:, spaceWithUUID:, and the Dock's own switchToUserSpace:
+  (B24@0:8q16), switchToNextSpace:/switchToPreviousSpace: (B20@0:8B16),
+  fluidGestureStart:/Progress:/End: (the swipe consumer), anySwitchingOccurring.
+- `DockCore.DisplaySpaces` (pure Swift, no ObjC methods) holds _currentSpace
+  +88, spaces +56, display +48, displayUUID +32, _spaceSwitcher +144.
+- No class accessor for Spaces. Holders: DockCore.DockAgent.spaces +64
+  (DockAgent : NSObject, also holds dockBar, expose, gestures),
+  DockVisibility._spaces (@"Spaces") +8, DockBar.spaces +648,
+  DockSystemGestureManager.spaces +32. Dock binary symbols stripped
+  (nm: no DockAgent/global names), so the live instance has to be found at
+  runtime: scan the Dock image's writable segments for a malloc-backed
+  pointer whose class is Spaces or DockAgent (malloc_size gate before any
+  deref), malloc-zone enumeration as the fallback.
+[Files Changed]
+- spacetoosa.m: objc/runtime.h import, dumpMethods/dumpClasses, opcode 5 in
+  handle() (no wid read), SA_PROTO_VERSION 2.
+- spacetool.m: OP_DUMP_CLASSES enum, cmdSADump, `sa-dump` dispatch.
+[Possible Ripple Effects]
+- Version bump: spacetool built from this tree still talks to v1 payloads for
+  stick (the gate is only in sa-dump). loadsa unchanged, sudoers pin intact.
+[Testing Notes]
+- make install-sa + killall Dock; SpaceBadge re-injected (Dock pid 20988);
+  sa-dump wrote 262404 bytes. v1 refusal tested before the reinstall.
+
 [2026-09-30 19:21:59 UTC] [spacetool/Fix: overlapping switches land on the wrong space]
 [Attempt #1]
 [Cause, reproduced live]

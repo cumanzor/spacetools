@@ -3,11 +3,12 @@
 // (onAllWorkspaces); every other writer is silently gated
 // (docs/window-on-all-spaces.md). This dylib is dlopen'd into the Dock by
 // loadsa; its constructor opens /tmp/spacetool-sa_$USER.socket (0600) and
-// serves four opcodes. Socket shape ported from yabai's osax payload
+// serves its opcodes. Socket shape ported from yabai's osax payload
 // (MIT, src/osax/payload.m).
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <dlfcn.h>
+#import <objc/runtime.h>
 #import <errno.h>
 #import <pthread.h>
 #import <signal.h>
@@ -24,8 +25,9 @@ typedef BOOL (*IterAdvanceFn)(CFTypeRef);
 typedef uint32_t (*IterWidFn)(CFTypeRef);
 typedef uint64_t (*IterTagsFn)(CFTypeRef);
 
-enum { OP_HELLO = 1, OP_STICKY_SET = 2, OP_STICKY_CLEAR = 3, OP_STICKY_QUERY = 4 };
-#define SA_PROTO_VERSION 1
+enum { OP_HELLO = 1, OP_STICKY_SET = 2, OP_STICKY_CLEAR = 3, OP_STICKY_QUERY = 4,
+       OP_DUMP_CLASSES = 5 };
+#define SA_PROTO_VERSION 2
 #define STICKY_BIT 11
 
 static int cid;
@@ -52,6 +54,47 @@ static uint64_t tagsFor(uint32_t wid) {
     return tags;
 }
 
+static void dumpMethods(NSMutableString *o, Class c, char kind) {
+    unsigned n = 0;
+    Method *ms = class_copyMethodList(c, &n);
+    for (unsigned i = 0; i < n; i++)
+        [o appendFormat:@"  %c %s  %s\n", kind, sel_getName(method_getName(ms[i])),
+            method_getTypeEncoding(ms[i]) ?: ""];
+    free(ms);
+}
+
+// read-only: names and layouts of every class the Dock image defines, so
+// dock_spaces can be found by ivar/selector name instead of a hex pattern
+static int64_t dumpClasses(const char *path) {
+    unsigned n = 0;
+    Class *all = objc_copyClassList(&n);
+    NSMutableString *o = [NSMutableString string];
+    unsigned kept = 0;
+    for (unsigned i = 0; i < n; i++) {
+        Class c = all[i];
+        const char *img = class_getImageName(c);
+        if (!img || !strstr(img, "/Dock.app/")) continue;
+        kept++;
+        Class sup = class_getSuperclass(c);
+        [o appendFormat:@"class %s : %s  size=%zu\n", class_getName(c),
+            sup ? class_getName(sup) : "-", class_getInstanceSize(c)];
+        unsigned ni = 0;
+        Ivar *iv = class_copyIvarList(c, &ni);
+        for (unsigned j = 0; j < ni; j++)
+            [o appendFormat:@"  ivar %s  %s  +%td\n", ivar_getName(iv[j]) ?: "?",
+                ivar_getTypeEncoding(iv[j]) ?: "", ivar_getOffset(iv[j])];
+        free(iv);
+        dumpMethods(o, object_getClass(c), '+');
+        dumpMethods(o, c, '-');
+    }
+    free(all);
+    [o insertString:[NSString stringWithFormat:@"# %u Dock classes of %u total\n", kept, n] atIndex:0];
+    NSData *d = [o dataUsingEncoding:NSUTF8StringEncoding];
+    if (![d writeToFile:@(path) atomically:YES]) return -1;
+    chmod(path, 0600);
+    return (int64_t)d.length;
+}
+
 static BOOL readN(int fd, void *buf, size_t n) {
     uint8_t *p = buf;
     while (n) {
@@ -76,7 +119,7 @@ static void handle(int fd) {
     uint8_t op = 0;
     uint32_t wid = 0;
     if (!readN(fd, &op, 1)) goto out;
-    if (op != OP_HELLO && !readN(fd, &wid, 4)) goto out;
+    if (op != OP_HELLO && op != OP_DUMP_CLASSES && !readN(fd, &wid, 4)) goto out;
     switch (op) {
     case OP_HELLO: {
         uint8_t r[5];
@@ -109,6 +152,18 @@ static void handle(int fd) {
         uint8_t r[12];
         memcpy(r, &err, 4);
         memcpy(r + 4, &tags, 8);
+        writeN(fd, r, sizeof r);
+        break;
+    }
+    case OP_DUMP_CLASSES: {
+        char path[128];
+        snprintf(path, sizeof path, "/tmp/spacetool-sa-classes_%s.txt", getenv("USER") ?: "unknown");
+        int64_t len = dumpClasses(path);
+        int32_t err = len < 0 ? kCGErrorFailure : kCGErrorSuccess;
+        uint64_t ulen = len < 0 ? 0 : (uint64_t)len;
+        uint8_t r[12];
+        memcpy(r, &err, 4);
+        memcpy(r + 4, &ulen, 8);
         writeN(fd, r, sizeof r);
         break;
     }

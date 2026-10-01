@@ -2,7 +2,9 @@
 // Only the Dock's window-server connection can set window tag bit 11
 // (onAllWorkspaces); every other writer is silently gated
 // (docs/window-on-all-spaces.md). This dylib is dlopen'd into the Dock by
-// loadsa; its constructor opens /tmp/spacetool-sa_$USER.socket (0600) and
+// loadsa (into the Dock and into WindowManager); its constructor opens
+// /tmp/spacetool-sa_$USER.socket in the Dock, /tmp/spacetool-sa-wm_$USER.socket
+// in WindowManager (0600), and
 // serves its opcodes. Socket shape ported from yabai's osax payload
 // (MIT, src/osax/payload.m).
 #import <Foundation/Foundation.h>
@@ -20,6 +22,7 @@
 #import <sys/socket.h>
 #import <sys/stat.h>
 #import <sys/un.h>
+#import <pwd.h>
 #import <unistd.h>
 
 typedef int (*ConnFn)(void);
@@ -32,10 +35,25 @@ typedef uint64_t (*IterTagsFn)(CFTypeRef);
 
 enum { OP_HELLO = 1, OP_STICKY_SET = 2, OP_STICKY_CLEAR = 3, OP_STICKY_QUERY = 4,
        OP_DUMP_CLASSES = 5, OP_FIND_SPACES = 6, OP_SPACE_FOCUS = 7 };
-#define SA_PROTO_VERSION 4
+#define SA_PROTO_VERSION 5
 #define STICKY_BIT 11
 
 static int cid;
+
+// same dylib in both hosts; the host picks the socket, report names and which
+// images the class dump keeps
+static BOOL inWindowManager;
+static const char *hostSuffix(void) { return inWindowManager ? "-wm" : ""; }
+static const char *userName(void) {
+    const char *u = getenv("USER");
+    if (u) return u;
+    struct passwd *pw = getpwuid(getuid());
+    return pw ? pw->pw_name : "unknown";
+}
+static BOOL hostImage(const char *img) {
+    if (!img) return NO;
+    return inWindowManager ? strstr(img, "WindowManager") != NULL : strstr(img, "/Dock.app/") != NULL;
+}
 static TagsFn setTagsF, clearTagsF;
 static QueryWindowsFn queryF;
 static QueryResultCopyFn iterCopyF;
@@ -78,7 +96,7 @@ static int64_t dumpClasses(const char *path) {
     for (unsigned i = 0; i < n; i++) {
         Class c = all[i];
         const char *img = class_getImageName(c);
-        if (!img || !strstr(img, "/Dock.app/")) continue;
+        if (!hostImage(img)) continue;
         kept++;
         Class sup = class_getSuperclass(c);
         [o appendFormat:@"class %s : %s  size=%zu\n", class_getName(c),
@@ -93,7 +111,8 @@ static int64_t dumpClasses(const char *path) {
         dumpMethods(o, c, '-');
     }
     free(all);
-    [o insertString:[NSString stringWithFormat:@"# %u Dock classes of %u total\n", kept, n] atIndex:0];
+    [o insertString:[NSString stringWithFormat:@"# %u %s classes of %u total\n", kept,
+        inWindowManager ? "WindowManager" : "Dock", n] atIndex:0];
     NSData *d = [o dataUsingEncoding:NSUTF8StringEncoding];
     if (![d writeToFile:@(path) atomically:YES]) return -1;
     chmod(path, 0600);
@@ -392,8 +411,8 @@ static void handle(int fd) {
         uint8_t flags = 0;
         if (op == OP_FIND_SPACES && !readN(fd, &flags, 1)) goto out;
         char path[128];
-        snprintf(path, sizeof path, op == OP_DUMP_CLASSES ? "/tmp/spacetool-sa-classes_%s.txt"
-                 : "/tmp/spacetool-sa-find_%s.txt", getenv("USER") ?: "unknown");
+        snprintf(path, sizeof path, "/tmp/spacetool-sa-%s%s_%s.txt",
+                 op == OP_DUMP_CLASSES ? "classes" : "find", hostSuffix(), userName());
         int64_t len = op == OP_DUMP_CLASSES ? dumpClasses(path) : findSpaces(path, flags & 1);
         int32_t err = len < 0 ? kCGErrorFailure : kCGErrorSuccess;
         uint64_t ulen = len < 0 ? 0 : (uint64_t)len;
@@ -412,12 +431,11 @@ static void *serve(void *unused) {
     (void)unused;
     int s = socket(AF_UNIX, SOCK_STREAM, 0);
     if (s < 0) { NSLog(@"[spacetool-sa] socket: %s", strerror(errno)); return NULL; }
-    const char *user = getenv("USER");
-    if (!user) { NSLog(@"[spacetool-sa] no USER in Dock environment"); return NULL; }
+    const char *user = userName();
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof addr);
     addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof addr.sun_path, "/tmp/spacetool-sa_%s.socket", user);
+    snprintf(addr.sun_path, sizeof addr.sun_path, "/tmp/spacetool-sa%s_%s.socket", hostSuffix(), user);
     unlink(addr.sun_path);
     if (bind(s, (struct sockaddr *)&addr, sizeof addr) < 0) {
         NSLog(@"[spacetool-sa] bind: %s", strerror(errno));
@@ -435,7 +453,8 @@ static void *serve(void *unused) {
 
 __attribute__((constructor))
 static void loadPayload(void) {
-    NSLog(@"[spacetool-sa] payload loaded");
+    inWindowManager = !strcmp(getprogname(), "WindowManager");
+    NSLog(@"[spacetool-sa] payload loaded in %s", getprogname());
     void *h = RTLD_DEFAULT;
     ConnFn connF = (ConnFn)dlsym(h, "SLSMainConnectionID");
     setTagsF = (TagsFn)dlsym(h, "SLSSetWindowTags");
@@ -450,7 +469,7 @@ static void loadPayload(void) {
     NSLog(@"[spacetool-sa] cid %d set=%d clear=%d query=%d", cid,
            setTagsF != NULL, clearTagsF != NULL, queryF != NULL);
     if (!setTagsF && !clearTagsF && !queryF) return;
-    // a client that vanishes mid-reply must not be able to SIGPIPE the Dock
+    // a client that vanishes mid-reply must not be able to SIGPIPE the host
     signal(SIGPIPE, SIG_IGN);
     pthread_t t;
     pthread_create(&t, NULL, serve, NULL);

@@ -116,18 +116,25 @@ static CFMachPortRef keyTap;
 static BOOL mcArmed;
 static BOOL mcFired;   // one switch per mission control session: a second would race the first
 static int maxOrd;
-static pid_t dockPidSeen;
 
 // --- scripting addition re-injection ---
-// the Dock does not auto-load osax bundles, so the payload dies with every
-// Dock restart; when the pid changes, re-run the sudoers-pinned loadsa
+// neither host auto-loads osax bundles, so the payload dies with every Dock or
+// WindowManager restart; when either pid changes, re-run the sudoers-pinned
+// loadsa (it injects every host whose payload is not answering)
+
+typedef struct { NSString *bundle; const char *socket, *name; BOOL needsLaunched; pid_t seen; } SAHost;
+static SAHost saHosts[] = {
+    { @"com.apple.dock", "spacetool-sa", "Dock", YES, 0 },
+    { @"com.apple.WindowManager", "spacetool-sa-wm", "WindowManager", NO, 0 },
+};
+#define SA_HOSTS (sizeof saHosts / sizeof saHosts[0])
 
 static NSString *loadsaPath(void) {
     return [NSHomeDirectory() stringByAppendingPathComponent:
         @"Applications/SpaceTool.app/Contents/MacOS/loadsa"];
 }
 
-static BOOL saHello(void) {
+static BOOL saHello(const SAHost *h) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return NO;
     struct timeval tv = { .tv_sec = 0, .tv_usec = 250000 };
@@ -135,7 +142,7 @@ static BOOL saHello(void) {
     struct sockaddr_un a;
     memset(&a, 0, sizeof a);
     a.sun_family = AF_UNIX;
-    snprintf(a.sun_path, sizeof a.sun_path, "/tmp/spacetool-sa_%s.socket",
+    snprintf(a.sun_path, sizeof a.sun_path, "/tmp/%s_%s.socket", h->socket,
              getenv("USER") ?: "unknown");
     if (connect(fd, (struct sockaddr *)&a, sizeof a) < 0) { close(fd); return NO; }
     uint8_t op = 1, rep[5];   // OP_HELLO
@@ -144,29 +151,26 @@ static BOOL saHello(void) {
     return ok;
 }
 
-static pid_t dockPid(void) {
-    NSArray *list = [NSRunningApplication
-        runningApplicationsWithBundleIdentifier:@"com.apple.dock"];
-    return list.count ? [list[0] processIdentifier] : 0;
+static NSRunningApplication *hostApp(const SAHost *h) {
+    NSArray *list = [NSRunningApplication runningApplicationsWithBundleIdentifier:h->bundle];
+    return list.count == 1 ? list[0] : nil;
 }
+static pid_t hostPid(const SAHost *h) { return hostApp(h).processIdentifier; }
 
-static BOOL dockFinishedLaunching(void) {
-    NSArray *list = [NSRunningApplication
-        runningApplicationsWithBundleIdentifier:@"com.apple.dock"];
-    return list.count == 1 && [list[0] isFinishedLaunching];
-}
-
-static void reinjectSA(pid_t pid) {
+static void reinjectSA(const SAHost *h, pid_t pid) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         if (![[NSFileManager defaultManager] fileExistsAtPath:loadsaPath()]) {
             NSLog(@"[spacebadge] no loadsa at %@, skipping sa re-inject", loadsaPath());
             return;
         }
-        for (int i = 0; i < 100 && !dockFinishedLaunching(); i++) usleep(100000);
-        if (dockPid() != pid) return;   // superseded by yet another Dock restart
-        usleep(1000000);                 // let the fresh Dock settle
-        if (dockPid() != pid) return;
-        if (saHello()) return;           // already alive, nothing to do
+        for (int i = 0; i < 100 && h->needsLaunched && !hostApp(h).isFinishedLaunching; i++)
+            usleep(100000);
+        if (hostPid(h) != pid) return;   // superseded by yet another restart
+        usleep(1000000);                  // let the fresh host settle
+        if (hostPid(h) != pid) return;
+        BOOL allAlive = YES;
+        for (size_t i = 0; i < SA_HOSTS; i++) allAlive &= saHello(&saHosts[i]);
+        if (allAlive) return;
         NSPipe *p = [NSPipe pipe];
         NSTask *t = [NSTask new];
         t.executableURL = [NSURL fileURLWithPath:@"/usr/bin/sudo"];
@@ -182,10 +186,10 @@ static void reinjectSA(pid_t pid) {
             os_log(OS_LOG_DEFAULT, "[spacebadge] sa re-inject failed (sudo exit %d): %{public}s"
                    " (stale sudoers hash? run make refresh-sa)",
                    t.terminationStatus, out.length ? out.UTF8String : "no output");
-        else if (saHello())
-            NSLog(@"[spacebadge] sa re-injected into Dock (pid %d)", pid);
+        else if (saHello(h))
+            NSLog(@"[spacebadge] sa re-injected into %s (pid %d)", h->name, pid);
         else
-            NSLog(@"[spacebadge] loadsa ran but the socket stayed dead");
+            NSLog(@"[spacebadge] loadsa ran but the %s socket stayed dead", h->name);
     });
 }
 
@@ -408,9 +412,11 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
 }
 
 - (void)tick {
-    pid_t dp = dockPid();
-    if (dp && dp != dockPidSeen) reinjectSA(dp);
-    dockPidSeen = dp;
+    for (size_t i = 0; i < SA_HOSTS; i++) {
+        pid_t pid = hostPid(&saHosts[i]);
+        if (pid && pid != saHosts[i].seen) reinjectSA(&saHosts[i], pid);
+        saHosts[i].seen = pid;
+    }
     BOOL mc = [self missionControlOpen];
     if (mc) [self showStrip];   // spaces get reordered while it is open, so keep up
     if (mc && !self.mcVisible) {

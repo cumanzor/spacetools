@@ -254,6 +254,8 @@ static void moveWindowsToSpace(NSArray *wids, uint64_t sid) {
 enum { OP_HELLO = 1, OP_STICKY_SET = 2, OP_STICKY_CLEAR = 3, OP_STICKY_QUERY = 4,
        OP_DUMP_CLASSES = 5, OP_FIND_SPACES = 6, OP_SPACE_FOCUS = 7 };
 
+// "" is the Dock's payload, "-wm" WindowManager's
+static const char *saHost = "";
 static int saConnect(void) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -261,7 +263,7 @@ static int saConnect(void) {
     memset(&a, 0, sizeof a);
     a.sun_family = AF_UNIX;
     const char *u = getenv("USER");
-    snprintf(a.sun_path, sizeof a.sun_path, "/tmp/spacetool-sa_%s.socket", u ?: "unknown");
+    snprintf(a.sun_path, sizeof a.sun_path, "/tmp/spacetool-sa%s_%s.socket", saHost, u ?: "unknown");
     if (connect(fd, (struct sockaddr *)&a, sizeof a) < 0) { close(fd); return -1; }
     return fd;
 }
@@ -428,8 +430,23 @@ static int cmdSAReport(const char *verb, uint8_t op, int need, const uint8_t *ar
     memcpy(&err, rep, 4);
     memcpy(&len, rep + 4, 8);
     if (err) { fprintf(stderr, "%s: payload could not write the report\n", verb); return 1; }
-    printf("/tmp/%s_%s.txt (%llu bytes)\n", file, getenv("USER") ?: "unknown", (unsigned long long)len);
+    printf("/tmp/%s%s_%s.txt (%llu bytes)\n", file, saHost, getenv("USER") ?: "unknown",
+           (unsigned long long)len);
     return 0;
+}
+
+static int cmdSAStatus(void) {
+    const char *hosts[] = { "", "-wm" }, *names[] = { "Dock", "WindowManager" };
+    int missing = 0;
+    for (int i = 0; i < 2; i++) {
+        saHost = hosts[i];
+        int32_t version = 0;
+        uint32_t mask = 0;
+        if (saHello(&version, &mask) < 0) { printf("%-14s not loaded\n", names[i]); missing++; continue; }
+        printf("%-14s v%d  symbols 0x%x\n", names[i], version, mask);
+    }
+    saHost = "";
+    return missing ? 1 : 0;
 }
 
 // The Dock owns the space list. SLSSpaceCreate/Destroy exist but leave the
@@ -936,11 +953,13 @@ int main(int argc, char **argv) {
         return cmdStick(arg, YES);
     }
     if ([mode isEqualToString:@"unstick"])  return cmdStick(arg, NO);
+    if ([mode isEqualToString:@"sa-status"]) return cmdSAStatus();
+    if ([mode hasPrefix:@"sa-"] && [rest containsObject:@"wm"]) saHost = "-wm";
     if ([mode isEqualToString:@"sa-dump"])
-        return cmdSAReport("sa-dump", OP_DUMP_CLASSES, 2, NULL, 0, "spacetool-sa-classes");
+        return cmdSAReport("sa-dump", OP_DUMP_CLASSES, *saHost ? 5 : 2, NULL, 0, "spacetool-sa-classes");
     if ([mode isEqualToString:@"sa-focus"]) return arg.length ? cmdSAFocus(arg) : 2;
     if ([mode isEqualToString:@"sa-find"]) {
-        uint8_t flags = [arg isEqualToString:@"--heap"] ? 1 : 0;
+        uint8_t flags = [rest containsObject:@"--heap"] ? 1 : 0;
         return cmdSAReport("sa-find", OP_FIND_SPACES, 3, &flags, 1, "spacetool-sa-find");
     }
     if ([mode isEqualToString:@"create"])  return cmdCreate(arg);

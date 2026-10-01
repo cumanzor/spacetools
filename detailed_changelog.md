@@ -1,3 +1,23 @@
+[2026-10-01 23:59:29 UTC] [spacetoosa/Fix: retain the _currentSpace written after remove_space]
+[Attempt #1]
+[Files Changed]
+- spacetoosa.m destroySpace: the resync after removing the ACTIVE space
+  stored `(__bridge void *)dest` into DisplaySpaces._currentSpace. That ivar
+  is a strong reference, so the Dock releases whatever it holds the next
+  time it switches on its own; our value carried no +1, so that release
+  over-releases the ManagedSpace (freed while still in DisplaySpaces.spaces).
+  Now CFBridgingRetain(dest); the previous value is leaked rather than
+  released, matching yabai's do_space_focus ([dest_space retain], no
+  release), since remove_space may already have dropped it.
+[Possible Ripple Effects]
+- One ManagedSpace leaked per active-space removal through the payload.
+  Bounded and harmless.
+- The instant-switch spike writes the same ivar and uses the same pattern.
+[Testing Notes]
+- Compile-verified (make spacetoosa, no warnings). Live: create, switch onto
+  it, rm while active, then several switches; the Dock must survive (was
+  the latent crash).
+
 [2026-10-01 23:41:29 UTC] [spacetool+loadsa/Feature: sw next/prev, payload out of ScriptingAdditions]
 [Attempt #1]
 [Files Changed]

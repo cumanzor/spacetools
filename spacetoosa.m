@@ -483,9 +483,10 @@ static int32_t destroySpace(uint64_t sid) {
                     id dest = spaceForSpid(ds, currentSpaceOfDisplayF(cid, displayUuid));
                     if (dest) {
                         Ivar cur = class_getInstanceVariable(object_getClass(ds), "_currentSpace");
+                        // the ivar is a strong ref: retain the new value, leak the old (yabai's choice)
                         if (cur)
                             *(uintptr_t *)((uintptr_t)(__bridge void *)ds + ivar_getOffset(cur)) =
-                                (uintptr_t)(__bridge void *)dest;
+                                (uintptr_t)CFBridgingRetain(dest);
                     }
                 }
                 res = SPACEC_OK;

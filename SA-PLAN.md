@@ -238,15 +238,30 @@ ivar/selector names instead of hex patterns) is the approach to try
 first. The bounded alternative if phase 2 stalls: capture a real swipe
 and diff the raw IOHID field-4205 payload against the synthesized one.
 
-## 3. Phase 3 (optional): create/rm without Mission Control
+## 3. Phase 3 (optional): create/rm without Mission Control - CLOSED 2026-10-01
 
-The Dock's own `addSpace`/`removeSpace` via scanned function pointers
-(yabai's `do_space_create`/`do_space_destroy`), which also routes around
-the `com.apple.private.windowmanager.spacemanagement` wall documented in
-`docs/space-creation-without-mission-control.md`. Full September tax (2-5
-patterns per OS release; yabai churned them 26.0 -> 26.4). Design rule from
-the start: SA path first, AX/MC path as automatic fallback when the pattern
-scan misses, so create/rm degrade to today's ~0.6s instead of failing.
+Route was to inject the payload into WindowManager.app (the real space
+creator on 26; the Dock only does wallpaper bookkeeping). Closed on
+26A428: the kernel silently rejects mapping ANY executable image that is
+not already in the dyld shared cache into WindowManager. dlopen returns
+NULL with errno 1 (EPERM) regardless of signature (the adhoc production
+payload, a Developer-ID copy with a real chain, Apple's own platform-signed
+StandardAdditions osax, a plain adhoc CG-only dylib), regardless of the
+calling thread (mach-converted pcfmt thread or a normal pthread spawned
+from it), and regardless of path (/System, /Library, /tmp). No amfid
+consultation, no sandbox deny, no kernel log line at the injection
+moments; the only successful load was a dylib already in the shared cache
+(/usr/lib/libSystem.B.dylib). The Dock loads the same adhoc payload fine;
+`com.apple.private.syspolicy.gatekeeper-override` (Dock-only) is the
+plausible differentiator. Evidence: the v4 instrumented loader
+(loadsa-shellcode.s, results read back through a slot on the injected
+stack; see the 2026-10-01 changelog entry).
+
+Create/rm stays on the MC round trip (~0.6s, flashes MC, needs
+Accessibility). Reopen only if an OS update loosens WM's code-mapping
+policy or a new in-process route appears; the admin XPC remains
+entitlement-gated per docs/space-creation-without-mission-control.md
+section 5.
 
 ## 4. Risks and unknowns
 

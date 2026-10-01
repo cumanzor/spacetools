@@ -1,3 +1,80 @@
+[2026-10-01 21:04:49 UTC] [loadsa/Investigation: phase 3 step 1, WindowManager injection closed]
+[Attempt #1]
+[What landed]
+- Instrumented loader. shellcode v4 (source loadsa-shellcode.s, new in the
+  repo; the bytes in loadsa.m are generated from the .s and the patch
+  offsets verified against its disassembly, with a _Static_assert on the
+  total size).
+- Chain: entry mach thread -> pthread_create_from_mach_thread (stub2) ->
+  pthread_create of a normal pthread (stub3) -> dlopen runs there. stub2
+  stores its pthread_create rc at slot[0]; stub3 stores {dlopen handle,
+  dlerror pointer, errno} at slot[1..3]; a 40-byte sentinel-initialized
+  slot on the injected stack, read back by the loader with
+  mach_vm_read_overwrite. Exit code 0 now requires the payload socket to
+  answer HELLO; the old "payload injected" line printed on the entry-stub
+  magic alone and lied whenever dlopen failed inside the target.
+- Experiment knob: /tmp/spacetool-loadsa-payload (one path line) overrides
+  payload_path, because the sudoers pin allows no arguments and sudo strips
+  the environment.
+[Files Changed]
+- loadsa.m: v4 shellcode, OFF_* offsets, result_sentinel[5], reportResult
+  (pcfmt pthread slot read at entry_sp-0x28, rc poll, handle poll, dlerror
+  and errno readback, socket wait), the override file in main.
+- loadsa-shellcode.s: new; the source of the shellcode bytes.
+[The finding]
+- pthread_create_from_mach_thread works in WindowManager; dlopen of any
+  image NOT already in the dyld shared cache fails with errno 1 (EPERM),
+  silently. No amfid consultation at the injection moments (the only
+  amfid log traffic was CoreSimulator noise from an unrelated simulator
+  test run), no sandbox deny, no kernel line. Tried: the adhoc production
+  payload; a Developer-ID-signed copy (TeamIdentifier F22QN9W7L8, real
+  chain); Apple's own platform-signed StandardAdditions osax; a plain
+  adhoc dylib touching only CoreGraphics; from both the pcfmt thread and
+  a normal pthread; from /System, /Library and /tmp paths. Only
+  /usr/lib/libSystem.B.dylib (already in the shared cache, so no file
+  access) loads. The Dock loads the same adhoc payload fine;
+  com.apple.private.syspolicy.gatekeeper-override (Dock-only) is the
+  plausible differentiator.
+- Side findings: the installed payload binary is adhoc linker-signed (the
+  install-sa bundle signature never reaches the inner binary; the osax
+  Info.plist has no CFBundleExecutable, so codesign never signs it, and
+  dlopen evaluates the inner file directly). dyld dlerror delivery is
+  broken on mach-converted threads (the returned pointer is garbage);
+  errno capture is the reliable channel. A constructor that first-touches
+  singleton dispatch_once state on a pcfmt thread can crash a bare host
+  (CoreGraphics generic gray in the fake-host smoke test); v4 avoids the
+  class by running the constructor on a normal pthread.
+- Every log query in this repo's sessions must use /usr/bin/log: zsh has
+  a `log` builtin, so bare `log show` in zsh fails with "too many
+  arguments" and, with stderr discarded, looks like an empty result. That
+  is what ate the previous session's log searches.
+[Decision]
+- Phase 3 create/rm without Mission Control stays on the MC round trip
+  (~0.6s). Code injection into WindowManager is closed on 26A428 unless
+  an OS update changes the code-mapping policy; the admin XPC remains
+  entitlement-gated per docs/space-creation-without-mission-control.md.
+[Possible Ripple Effects]
+- loadsa now honestly fails (exit 1) when a payload cannot load, so
+  install-sa (which runs `sudo -n loadsa`) stops loudly on a failed
+  injection where the old code printed success regardless.
+- SpaceBadge still watches both pids; a WM pid change re-runs loadsa,
+  which attempts and fails the WM injection each time (~0.5s, harmless,
+  would succeed if an OS update loosens the policy). The Dock path is
+  unchanged for the running v4 payload; the next Dock restart re-injects
+  through the v4 chain (fake-host E2E verified with the real payload).
+[Testing Notes]
+- Fake arm64e get-task-allow host named WindowManager (fakewm/): v4
+  end-to-end with the real payload: pcfmt thread up, pthread_create rc 0,
+  dlopen handle non-NULL, socket answered HELLO v5 via `SpaceTool
+  sa-status`, exit 0, host alive.
+- Negative path with a bogus payload path: "dlopen failed (errno 2)"
+  (ENOENT), exit 1, target survives.
+- Real WM matrix, all through the pinned binary + the override file:
+  adhoc EPERM, DR-signed EPERM, Apple StandardAdditions EPERM, CG-only
+  adhoc EPERM, in-cache libSystem loaded (handle non-NULL, "socket never
+  came up" as expected for a non-payload dylib). WM pid 681 never
+  crashed; vmmap showed zero spacetoosa mappings after every failure.
+
 [2026-10-01 18:54:27 UTC] [spacetool/Feature: phase 2 step 4, sw and MC+digit switch through the payload]
 [Attempt #1]
 [What landed]

@@ -55,11 +55,11 @@ exit 0 on success, 1 on a miss, and 2 on bad usage.
 named app) and need the SpaceToolSA payload running inside the Dock, because
 only the Dock's connection can write the on-all-spaces window tag
 (docs/window-on-all-spaces.md). Setup and the SIP prerequisite live in
-SA-PLAN.md:
+docs/window-on-all-spaces.md:
 
 ```sh
 make install-sa        # payload + sudoers-pinned injector + load it now
-sudo nvram boot-args="-arm64e_preview_abi" && sudo reboot   # once, see SA-PLAN.md
+sudo nvram boot-args="-arm64e_preview_abi" && sudo reboot   # once, see docs/window-on-all-spaces.md
 spacetool stick
 ```
 

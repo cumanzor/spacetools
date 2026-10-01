@@ -4,7 +4,7 @@
 // spawns a proper pthread calling dlopen on the payload, then run it via a
 // converted arm64e thread state. Ported from yabai's src/osax/loader.m (MIT);
 // the arm64e injection path there is based on work by Jeremy Legendre.
-// Needs the csrutil relaxations from SA-PLAN.md plus the
+// Needs the csrutil relaxations from docs/window-on-all-spaces.md plus the
 // -arm64e_preview_abi boot-arg (this loader and the payload are arm64e).
 //
 // Unlike yabai's loader, this one reports whether the injection actually

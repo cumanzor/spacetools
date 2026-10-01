@@ -53,7 +53,7 @@ firing it at a space.
 
 `stick` / `unstick` pin the focused window (or a named app's frontmost window)
 to every space, like a manual "All Desktops" but per window. This needs the SA
-payload inside the Dock (SA-PLAN.md setup; one `make install-sa` ever). It dies
+payload inside the Dock (docs/window-on-all-spaces.md setup; one `make install-sa` ever). It dies
 with the Dock, but SpaceBadge re-injects it automatically after every Dock
 restart, reboots included, so it should always just answer. `stick list` needs
 no window in front of you.

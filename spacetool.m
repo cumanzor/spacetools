@@ -252,7 +252,10 @@ static void moveWindowsToSpace(NSArray *wids, uint64_t sid) {
 // the payload inside the Dock serves /tmp/spacetool-sa_$USER.socket; only
 // it can write window tag bit 11 (onAllWorkspaces)
 enum { OP_HELLO = 1, OP_STICKY_SET = 2, OP_STICKY_CLEAR = 3, OP_STICKY_QUERY = 4,
-       OP_DUMP_CLASSES = 5, OP_FIND_SPACES = 6, OP_SPACE_FOCUS = 7 };
+       OP_DUMP_CLASSES = 5, OP_FIND_SPACES = 6, OP_SPACE_FOCUS = 7,
+       OP_SPACE_CREATE = 8, OP_SPACE_DESTROY = 9 };
+enum { SPACEC_OK = 0, SPACEC_NO_SPACES = -1, SPACEC_BAD_SID = -2, SPACEC_NO_DISPLAY = -3,
+       SPACEC_NO_CLASS = -4, SPACEC_TIMEOUT = -5, SPACEC_UNRESOLVED = -6, SPACEC_NOT_FOUND = -7 };
 
 // "" is the Dock's payload, "-wm" WindowManager's
 static const char *saHost = "";
@@ -312,7 +315,7 @@ static int saNotLoaded(const char *verb) {
                     "      make refresh-sa        (re-pins the injector after a rebuild)\n"
                     "      sudo -n ~/Applications/SpaceTool.app/Contents/MacOS/loadsa\n"
                     "    (needs the csrutil relaxations and the -arm64e_preview_abi"
-                    " boot-arg, see SA-PLAN.md)\n", verb);
+                    " boot-arg, see docs/window-on-all-spaces.md)\n", verb);
     return 1;
 }
 
@@ -661,6 +664,44 @@ static int lockSwitch(void) {
     return lfd;
 }
 
+// create/destroy inside the Dock: the payload calls the Dock's own
+// add_space/remove_space routines; no Mission Control round trip. Returns 0
+// it landed, 1 the payload cannot (why says so), 2 accepted but it may not land
+static int saMutateSpace(uint8_t op, uint64_t sid, NSString **why) {
+    int32_t version = 0;
+    uint32_t mask = 0;
+    if (saHello(&version, &mask) < 0) { *why = @"scripting addition not loaded"; return 1; }
+    if (version < 6 || !(mask & (op == OP_SPACE_CREATE ? 8 : 16))) {
+        *why = version < 6 ? [NSString stringWithFormat:@"payload is v%d, needs v6", version]
+                           : @"payload did not resolve the Dock add/remove routine (pattern drift?)";
+        return 1;
+    }
+    int fd = saConnect();
+    if (fd < 0) { *why = @"scripting addition not loaded"; return 1; }
+    uint8_t msg[9] = { op }, rep[12];
+    memcpy(msg + 1, &sid, 8);
+    if (!saWriteN(fd, msg, sizeof msg) || !saReadN(fd, rep, sizeof rep)) {
+        close(fd);
+        *why = @"payload went away";
+        return 1;
+    }
+    close(fd);
+    int32_t err;
+    memcpy(&err, rep, 4);
+    if (err == SPACEC_OK) return 0;
+    switch (err) {
+    case SPACEC_NO_SPACES:    *why = @"payload found no Spaces instance"; break;
+    case SPACEC_BAD_SID:     *why = @"not a managed space id (NULL display guard)"; break;
+    case SPACEC_NO_DISPLAY:  *why = @"payload found no DisplaySpaces for that display"; break;
+    case SPACEC_NO_CLASS:    *why = @"ManagedSpace class missing in the Dock"; break;
+    case SPACEC_TIMEOUT:     *why = @"Dock main queue timed out"; return 2;
+    case SPACEC_UNRESOLVED:  *why = @"payload could not resolve the Dock add/remove routine"; break;
+    case SPACEC_NOT_FOUND:   *why = @"space not in the Dock model"; break;
+    default: *why = [NSString stringWithFormat:@"payload error %d", err];
+    }
+    return 1;
+}
+
 // payload first; the swipe is the fallback. The swipe is relative, so a second
 // switch reading the current space before the first lands would add its delta
 // to a stale base: the lock serializes them
@@ -765,9 +806,44 @@ static int cmdSend(NSString *query) {
     return 1;
 }
 
+// payload first (no Accessibility, no Mission Control flash); the AX path
+// (~0.6s, flashes MC) stays as the fallback. SPACETOOL_MC forces it.
 static int cmdCreate(NSString *name) {
-    if (!axReady("create")) return 1;
     NSString *ident = currentSpaceInfo()[@"display"] ?: @"Main";
+    if (!getenv("SPACETOOL_MC")) {
+        NSDictionary *ref = currentSpaceOnDisplay(ident);
+        if (ref) {
+            NSMutableSet *had = [NSMutableSet set];
+            for (NSDictionary *s in spaceInfos()) [had addObject:s[@"uuid"]];
+            NSString *why = nil;
+            int r = saMutateSpace(OP_SPACE_CREATE, [ref[@"sid"] unsignedLongLongValue], &why);
+            if (r != 1) {
+                __block NSDictionary *fresh = nil;
+                waitUntil(3.0, ^{
+                    for (NSDictionary *s in spaceInfos())
+                        if (![had containsObject:s[@"uuid"]]) { fresh = s; return YES; }
+                    return NO;
+                });
+                if (fresh) {
+                    if (name.length) {
+                        NSMutableDictionary *map = loadMap();
+                        map[fresh[@"uuid"]] = name;
+                        saveMap(map);
+                        printf("created Desktop %d (space %llu) -> \"%s\"\n",
+                               [fresh[@"ord"] intValue], [fresh[@"sid"] unsignedLongLongValue],
+                               name.UTF8String);
+                    } else {
+                        printf("created Desktop %d (space %llu)\n", [fresh[@"ord"] intValue],
+                               [fresh[@"sid"] unsignedLongLongValue]);
+                    }
+                    return 0;
+                }
+                why = @"the Dock accepted the create but no space appeared";
+            }
+            fprintf(stderr, "create: %s, falling back to Mission Control\n", why.UTF8String);
+        }
+    }
+    if (!axReady("create")) return 1;
     NSMutableSet *had = [NSMutableSet set];
     for (NSDictionary *s in spaceInfos()) [had addObject:s[@"uuid"]];
     AXUIElementRef spaces = mcSpacesGroupFor(ident);
@@ -800,7 +876,6 @@ static int cmdCreate(NSString *name) {
 }
 
 static int cmdRemove(NSString *query) {
-    if (!axReady("rm")) return 1;
     NSDictionary *s = matchSpace(query);
     if (!s) { fprintf(stderr, "rm: no space matching \"%s\"\n", query.UTF8String); return 1; }
     if ([s[@"type"] intValue] != 0) {
@@ -815,6 +890,29 @@ static int cmdRemove(NSString *query) {
         fprintf(stderr, "rm: refusing to remove the last desktop\n");
         return 1;
     }
+    // payload first (no Accessibility, no Mission Control flash); SPACETOOL_MC
+    // forces the AX fallback below
+    if (!getenv("SPACETOOL_MC")) {
+        NSString *why = nil;
+        uint64_t sid = [s[@"sid"] unsignedLongLongValue];
+        int r = saMutateSpace(OP_SPACE_DESTROY, sid, &why);
+        if (r != 1) {
+            BOOL gone = waitUntil(3.0, ^{
+                for (NSDictionary *now in spaceInfos())
+                    if ([now[@"uuid"] isEqual:s[@"uuid"]]) return NO;
+                return YES;
+            });
+            if (gone) {
+                NSMutableDictionary *map = loadMap();
+                if (map[s[@"uuid"]]) { [map removeObjectForKey:s[@"uuid"]]; saveMap(map); }
+                printf("removed %s (space %llu)\n", label(s).UTF8String, sid);
+                return 0;
+            }
+            why = @"the Dock accepted the destroy but the space is still there";
+        }
+        fprintf(stderr, "rm: %s, falling back to Mission Control\n", why.UTF8String);
+    }
+    if (!axReady("rm")) return 1;
     AXUIElementRef spaces = mcSpacesGroupFor(ident);
     AXUIElementRef list = spaces ? axFind(spaces, @"mc.spaces.list", 2) : NULL;
     if (!list) {

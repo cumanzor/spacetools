@@ -32,11 +32,17 @@ typedef CFTypeRef (*QueryResultCopyFn)(CFTypeRef);
 typedef BOOL (*IterAdvanceFn)(CFTypeRef);
 typedef uint32_t (*IterWidFn)(CFTypeRef);
 typedef uint64_t (*IterTagsFn)(CFTypeRef);
+typedef CFStringRef (*CopyDisplayForSpaceFn)(int, uint64_t);
+typedef uint64_t (*CurrentSpaceOfDisplayFn)(int, CFStringRef);
 
 enum { OP_HELLO = 1, OP_STICKY_SET = 2, OP_STICKY_CLEAR = 3, OP_STICKY_QUERY = 4,
-       OP_DUMP_CLASSES = 5, OP_FIND_SPACES = 6, OP_SPACE_FOCUS = 7 };
-#define SA_PROTO_VERSION 5
+       OP_DUMP_CLASSES = 5, OP_FIND_SPACES = 6, OP_SPACE_FOCUS = 7,
+       OP_SPACE_CREATE = 8, OP_SPACE_DESTROY = 9 };
+#define SA_PROTO_VERSION 6
 #define STICKY_BIT 11
+
+enum { SPACEC_OK = 0, SPACEC_NO_SPACES = -1, SPACEC_BAD_SID = -2, SPACEC_NO_DISPLAY = -3,
+       SPACEC_NO_CLASS = -4, SPACEC_TIMEOUT = -5, SPACEC_UNRESOLVED = -6, SPACEC_NOT_FOUND = -7 };
 
 static int cid;
 
@@ -60,6 +66,21 @@ static QueryResultCopyFn iterCopyF;
 static IterAdvanceFn iterAdvF;
 static IterWidFn iterWidF;
 static IterTagsFn iterTagsF;
+static CopyDisplayForSpaceFn displayForSpaceF;
+static CurrentSpaceOfDisplayFn currentSpaceOfDisplayF;
+static uintptr_t addSpaceFp, removeSpaceFp;
+
+// the Dock's own add_space/remove_space C routines, located by the 27.x byte
+// patterns from asmvik/yabai#2832 (LCS-Dev-Ergos' tables, MIT). The first
+// instruction is wildcarded so both arm64e slices match (pacibsp vs
+// pacibsppc); both patterns measured unique across the whole 26A428 Dock
+// __TEXT, so an OS bump that drifts them zeroes the HELLO bits, loudly
+static const char *addSpacePattern =
+    "?? ?? ?? ?? E1 03 1E AA ?? ?? ?? 97 FE 03 01 AA FD 7B 05 A9 FD 43 01 91 "
+    "F3 03 14 AA F5 03 00 AA 96 8E 43 F8 ";
+static const char *removeSpacePattern =
+    "?? ?? ?? ?? FF ?? ?? D1 FC ?? ?? A9 FA ?? ?? A9 F8 ?? ?? A9 F6 ?? ?? A9 "
+    "F4 ?? ?? A9 FD ?? ?? A9 FD ?? ?? 91 ?? 03 03 AA F5 03 02 AA F4 03 01 AA ";
 
 static uint64_t tagsFor(uint32_t wid) {
     uint64_t tags = 0;
@@ -333,6 +354,150 @@ static int32_t focusSpace(uint64_t sid, int64_t *indexOut) {
     return res;
 }
 
+// matched over the Dock's whole __TEXT at runtime; no per-version offset window
+static uintptr_t patternFind(const char *pattern) {
+    intptr_t slide = 0;
+    const struct mach_header_64 *mh = dockImage(&slide);
+    if (!mh) return 0;
+    uint8_t want[96], solid[96];
+    size_t n = 0;
+    for (const char *p = pattern; *p; p += 3) {
+        if (n >= sizeof want) return 0;
+        if (p[0] == '?') solid[n] = 0;
+        else { want[n] = (uint8_t)strtoul(p, NULL, 16); solid[n] = 1; }
+        n++;
+    }
+    const struct load_command *lc = (const void *)(mh + 1);
+    for (uint32_t i = 0; i < mh->ncmds; i++, lc = (const void *)((const uint8_t *)lc + lc->cmdsize)) {
+        if (lc->cmd != LC_SEGMENT_64) continue;
+        const struct segment_command_64 *seg = (const void *)lc;
+        if (strcmp(seg->segname, "__TEXT")) continue;
+        const uint8_t *b = (const uint8_t *)(seg->vmaddr + slide);
+        for (uint64_t off = 0; off + n <= seg->vmsize; off++)
+            for (size_t k = 0; ; k++) {
+                if (k == n) return (uintptr_t)(b + off);
+                if (solid[k] && b[off + k] != want[k]) break;
+            }
+        break;
+    }
+    return 0;
+}
+
+// add_space reads its DisplaySpaces argument from x20, outside the C ABI; the
+// asm shim is yabai's (MIT, src/osax/arm64_payload.m)
+#define callAddSpace(v0, v1, fn) \
+    __asm__("mov x0, %0\n" "mov x20, %1\n" : : "r"((__bridge void *)(v0)), "r"((__bridge void *)(v1)) : "x0", "x20"); \
+    ((void (*)(void))(fn))();
+
+static uint64_t spaceSpid(id space) {
+    return ((uint64_t (*)(id, SEL))objc_msgSend)(space, sel_registerName("spid"));
+}
+
+static id spaceForSpid(id displaySpaces, uint64_t sid) {
+    Ivar iv = class_getInstanceVariable(object_getClass(displaySpaces), "spaces");
+    if (!iv) return nil;
+    NSArray *all = (__bridge id)(void *)*(uintptr_t *)((uintptr_t)(__bridge void *)displaySpaces + ivar_getOffset(iv));
+    for (id s in all)
+        if (spaceSpid(s) == sid) return s;
+    return nil;
+}
+
+// the DisplaySpaces for a display: each one's _currentSpace names its display
+// through SLS (yabai's route; spacesForDisplay: no longer exists on 26A428)
+static id displaySpacesForUuid(uintptr_t sp, CFStringRef displayUuid) {
+    Ivar iv = class_getInstanceVariable(object_getClass((__bridge id)(void *)sp), "_displaySpaces");
+    if (!iv || !displayForSpaceF) return nil;
+    NSArray *all = (__bridge id)(void *)*(uintptr_t *)(sp + ivar_getOffset(iv));
+    for (id ds in all) {
+        Ivar cur = class_getInstanceVariable(object_getClass(ds), "_currentSpace");
+        if (!cur) continue;
+        id curSpace = (__bridge id)(void *)*(uintptr_t *)((uintptr_t)(__bridge void *)ds + ivar_getOffset(cur));
+        if (!curSpace) continue;
+        CFStringRef uuid = displayForSpaceF(cid, spaceSpid(curSpace));
+        BOOL match = uuid && CFStringCompare(uuid, displayUuid, 0) == kCFCompareEqualTo;
+        if (uuid) CFRelease(uuid);
+        if (match) return ds;
+    }
+    return nil;
+}
+
+// create: new_space = [[ManagedSpace alloc] init], then the Dock's own
+// add_space(new_space, display_space) on the Dock main queue. The reference
+// sid only names the display to create on.
+static int32_t createSpace(uint64_t refSid) {
+    __block int32_t res = SPACEC_TIMEOUT;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        uintptr_t sp = locateSpaces();
+        if (!sp) res = SPACEC_NO_SPACES;
+        else if (!displayForSpaceF || !addSpaceFp) res = SPACEC_UNRESOLVED;
+        else {
+            CFStringRef displayUuid = displayForSpaceF(cid, refSid);
+            if (!displayUuid) res = SPACEC_BAD_SID;
+            else {
+                id ds = displaySpacesForUuid(sp, displayUuid);
+                CFRelease(displayUuid);
+                Class c = objc_getClass("ManagedSpace") ?: objc_getClass("Dock.ManagedSpace");
+                if (!ds) res = SPACEC_NO_DISPLAY;
+                else if (!c) res = SPACEC_NO_CLASS;
+                else {
+                    id newSpace = ((id (*)(id, SEL))objc_msgSend)((id)c, sel_registerName("alloc"));
+                    newSpace = ((id (*)(id, SEL))objc_msgSend)(newSpace, sel_registerName("init"));
+                    callAddSpace(newSpace, ds, addSpaceFp);
+                    // the empty asm keeps both objects alive across the indirect call;
+                    // ARC cannot see that the call above consumes them
+                    __asm__ volatile("" : : "r"((__bridge void *)newSpace), "r"((__bridge void *)ds));
+                    res = SPACEC_OK;
+                }
+            }
+        }
+        dispatch_semaphore_signal(done);
+    });
+    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+    return res;
+}
+
+// destroy: the Dock's own remove_space(space, display_space, dock_spaces,
+// sid, sid), then _currentSpace resync if the active space died (yabai's
+// post-destroy fix). SLSCopyManagedDisplayForSpace must be checked first:
+// an unknown sid NULLs the display and crashes the Dock inside
+// SLSManagedDisplayGetCurrentSpace (asmvik/yabai#2832)
+static int32_t destroySpace(uint64_t sid) {
+    if (!displayForSpaceF || !currentSpaceOfDisplayF || !removeSpaceFp) return SPACEC_UNRESOLVED;
+    CFStringRef displayUuid = displayForSpaceF(cid, sid);
+    if (!displayUuid) return SPACEC_BAD_SID;
+    uint64_t activeSid = currentSpaceOfDisplayF(cid, displayUuid);
+    __block int32_t res = SPACEC_TIMEOUT;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        uintptr_t sp = locateSpaces();
+        if (!sp) res = SPACEC_NO_SPACES;
+        else {
+            id ds = displaySpacesForUuid(sp, displayUuid);
+            id space = ds ? spaceForSpid(ds, sid) : nil;
+            if (!ds || !space) res = SPACEC_NOT_FOUND;
+            else {
+                ((void (*)(id, id, id, uint64_t, uint64_t))removeSpaceFp)(
+                    space, ds, (__bridge id)(void *)sp, sid, sid);
+                if (activeSid == sid) {
+                    id dest = spaceForSpid(ds, currentSpaceOfDisplayF(cid, displayUuid));
+                    if (dest) {
+                        Ivar cur = class_getInstanceVariable(object_getClass(ds), "_currentSpace");
+                        if (cur)
+                            *(uintptr_t *)((uintptr_t)(__bridge void *)ds + ivar_getOffset(cur)) =
+                                (uintptr_t)(__bridge void *)dest;
+                    }
+                }
+                res = SPACEC_OK;
+            }
+        }
+        CFRelease(displayUuid);
+        dispatch_semaphore_signal(done);
+    });
+    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+    return res;
+}
+
 static BOOL readN(int fd, void *buf, size_t n) {
     uint8_t *p = buf;
     while (n) {
@@ -361,7 +526,8 @@ static void handle(int fd) {
     switch (op) {
     case OP_HELLO: {
         uint8_t r[5];
-        uint32_t mask = (setTagsF ? 1u : 0u) | (clearTagsF ? 2u : 0u) | (queryF ? 4u : 0u);
+        uint32_t mask = (setTagsF ? 1u : 0u) | (clearTagsF ? 2u : 0u) | (queryF ? 4u : 0u)
+                      | (addSpaceFp ? 8u : 0u) | (removeSpaceFp ? 16u : 0u);
         r[0] = SA_PROTO_VERSION;
         memcpy(r + 1, &mask, 4);
         writeN(fd, r, sizeof r);
@@ -403,6 +569,19 @@ static void handle(int fd) {
         uint8_t r[12];
         memcpy(r, &err, 4);
         memcpy(r + 4, &index, 8);
+        writeN(fd, r, sizeof r);
+        break;
+    }
+    case OP_SPACE_CREATE:
+    case OP_SPACE_DESTROY: {
+        uint64_t sid = wid;
+        uint32_t hi = 0;
+        if (!readN(fd, &hi, 4)) goto out;
+        sid |= (uint64_t)hi << 32;
+        int32_t err = op == OP_SPACE_CREATE ? createSpace(sid) : destroySpace(sid);
+        uint8_t r[12];
+        memcpy(r, &err, 4);
+        memset(r + 4, 0, 8);
         writeN(fd, r, sizeof r);
         break;
     }
@@ -464,10 +643,26 @@ static void loadPayload(void) {
     iterAdvF = (IterAdvanceFn)dlsym(h, "SLSWindowIteratorAdvance");
     iterWidF = (IterWidFn)dlsym(h, "SLSWindowIteratorGetWindowID");
     iterTagsF = (IterTagsFn)dlsym(h, "SLSWindowIteratorGetTags");
+    displayForSpaceF = (CopyDisplayForSpaceFn)dlsym(h, "SLSCopyManagedDisplayForSpace");
+    currentSpaceOfDisplayF = (CurrentSpaceOfDisplayFn)dlsym(h, "SLSManagedDisplayGetCurrentSpace");
     if (!connF) { NSLog(@"[spacetool-sa] SLSMainConnectionID missing"); return; }
     cid = connF();
     NSLog(@"[spacetool-sa] cid %d set=%d clear=%d query=%d", cid,
            setTagsF != NULL, clearTagsF != NULL, queryF != NULL);
+    if (!inWindowManager) {
+        addSpaceFp = patternFind(addSpacePattern);
+        removeSpaceFp = patternFind(removeSpacePattern);
+        if (!displayForSpaceF || !currentSpaceOfDisplayF) { addSpaceFp = 0; removeSpaceFp = 0; }
+        if (addSpaceFp)
+            addSpaceFp = (uintptr_t)ptrauth_sign_unauthenticated((void *)addSpaceFp,
+                ptrauth_key_asia, 0);
+        if (removeSpaceFp)
+            removeSpaceFp = (uintptr_t)ptrauth_sign_unauthenticated((void *)removeSpaceFp,
+                ptrauth_key_asia, 0);
+        NSLog(@"[spacetool-sa] space create=%s destroy=%s",
+              addSpaceFp ? "ok" : "PATTERN MISS (HELLO will report it)",
+              removeSpaceFp ? "ok" : "PATTERN MISS (HELLO will report it)");
+    }
     if (!setTagsF && !clearTagsF && !queryF) return;
     // a client that vanishes mid-reply must not be able to SIGPIPE the host
     signal(SIGPIPE, SIG_IGN);

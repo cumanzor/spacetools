@@ -1,3 +1,120 @@
+[2026-10-01 22:46:46 UTC] [spacetoosa+spacetool/Feature: phase 3 landed via the Dock, WM injection never needed]
+[Attempt #1]
+[What landed]
+- Payload v6 (SA_PROTO_VERSION 6): OP_SPACE_CREATE (8) and OP_SPACE_DESTROY
+  (9), same wire shape as OP_SPACE_FOCUS (u64 space id in, i32 err + u64 pad
+  out). The payload calls the Dock's OWN add_space / remove_space C routines
+  on the Dock main queue (dispatch_async + 2s semaphore, the focusSpace
+  shape), not a reimplementation: create allocates [[ManagedSpace alloc]
+  init] and passes (new_space in x0, DisplaySpaces in x20) through yabai's
+  asm shim; destroy passes (space, display_space, dock_spaces, sid, sid)
+  and then resyncs DisplaySpaces._currentSpace if the active space died.
+- add_space/remove_space are located at payload-constructor time by the
+  asmvik/yabai#2832 macOS-27 byte patterns with the first instruction
+  wildcarded (pacibsp vs pacibsppc, both arm64e slices), matched over the
+  Dock's whole __TEXT (both patterns measured unique across the entire
+  26A428 arm64e slice: add at __TEXT+0x228cbc, remove at +0x18b9a0; no
+  per-version offset window to maintain), then ptrauth-signed with
+  ptrauth_key_asia. Resolution is reported through the HELLO mask (bits
+  0x8/0x10, alongside the four SLS symbols), so an OS bump that drifts the
+  patterns degrades loudly: create/rm fall back to Mission Control with a
+  stderr reason instead of silently no-oping.
+- The display mapping avoids selectors that died on 26: spacesForDisplay:
+  no longer exists (verified against the live class dump), so the payload
+  reads ivars by name instead: Spaces._displaySpaces (+24) -> each
+  DockCore.DisplaySpaces' _currentSpace (+88) -> spid ->
+  SLSCopyManagedDisplayForSpace to find the DisplaySpaces for a display, and
+  DisplaySpaces.spaces (+56, the #2832 "ivar offset 0x38" array) -> spid to
+  find the ManagedSpace for a sid. New dlsyms: SLSCopyManagedDisplayForSpace
+  and SLSManagedDisplayGetCurrentSpace (both exported, both already listed
+  in docs/space-creation-without-mission-control.md section 6).
+- spacetool.m: create and rm are payload-first now (saMutateSpace: HELLO
+  version >= 6 + the mask bit gate, then op + u64 sid, then the effect is
+  verified through CGSCopyManagedDisplaySpaces with the existing waitUntil
+  diff). The AX/Mission Control path is kept as the announced fallback;
+  SPACETOOL_MC=1 forces it for testing, mirroring SPACETOOL_SWIPE.
+[Why route (a) and not the pattern-free route (b) the handoff preferred]
+- Static disassembly of our own 26A428 Dock slice (extracted from the fat
+  file at offsets 0x4000/0x4a4000; slice pinned first, see below) settled
+  it: add_space is a ~0x200-byte bookkeeping routine (Swift fast-enumeration
+  counting, an internal array insert, THEN _CGSMoveManagedSpaceToDisplayIndex
+  via the auth stubs, then a notify through a global at 0x100409000+0xc50,
+  plus dictionary/array churn), not a thin wrapper around the CGS call.
+  remove_space runs a Swift _NativeDictionary delete keyed by the space
+  uuid, then _SLSTransactionCreate -> _SLSTransactionDestroySpace ->
+  _SLSTransactionCommit, and refuses below 2 spaces (cmp #0x2 at entry).
+  Replicating those sequences pattern-free would be fragile guesswork; the
+  whole-__TEXT pattern match is measured-unique on this exact build, so the
+  "September tax" is one pattern pair, wildcarded, reported through HELLO.
+  Internal call targets were resolved by decoding the __auth_stubs adrp/add
+  GOT slots and joining them with dyld_info -fixups bind names (2107/2107
+  stubs named); that workflow is reusable for the next Dock disassembly.
+- Slice pinned before any of this (step 1 of the handoff's revised order):
+  the running Dock (pid 19841) loaded the BASE arm64e slice (subtype 2), not
+  x1, despite the M4 Pro. Measured without root: the two slices differ in
+  __TEXT vmsize (arm64e 0x398000, x1 0x384000) and the live file-backed
+  __TEXT region is exactly 0x398000 with __DATA_CONST at base+0x398000.
+  vmmap examines the same-uid Dock without sudo (Apple-signed tool); plain
+  unsigned tools get task_for_pid denied non-root. pacibsppc therefore does
+  not bite today, but the patterns wildcard the first instruction anyway.
+[Files Changed]
+- spacetoosa.m: opcodes/enum + SA_PROTO_VERSION 6; SPACEC_* error codes;
+  displayForSpaceF/currentSpaceOfDisplayF dlsyms; addSpacePattern/
+  removeSpacePattern + patternFind (whole-__TEXT matcher); callAddSpace asm
+  shim (yabai, MIT); spaceSpid/spaceForSpid/displaySpacesForUuid ivar
+  helpers; createSpace/destroySpace on the main queue with the NULL-id
+  guard; HELLO mask bits 0x8/0x10; constructor pattern scan + ptrauth
+  signing (Dock host only).
+- spacetool.m: opcode/SPACEC enums; saMutateSpace + error->reason strings;
+  cmdCreate/cmdRemove rewritten payload-first with the AX path intact as
+  fallback and SPACETOOL_MC as the forcing knob.
+[Decision]
+- The phase 3 closure in SA-PLAN section 3 was reopened: its premise ("the
+  Dock only does wallpaper bookkeeping on 26") came from the ObjC class
+  dump, which cannot see C functions. asmvik/yabai#2832 (live-tested on
+  27.2, same fat-Dock architecture) proves create/destroy live in the Dock
+  through 26.0/26.1/27.2; this session converts that from RELAYED to
+  MEASURED on 26A428. The WM image-injection wall (EPERM, earlier today)
+  is real but was never across the path to the goal. Lead 2 (the shellcode
+  command-list VM in the WM handoff) is retired from the plan; it stays in
+  the handoff as the last-resort record.
+[Possible Ripple Effects]
+- make install-sa now always ends with the expected loadsa exit 1 on the
+  WindowManager target (the EPERM wall); the Dock injection succeeds before
+  it. Harmless, but the make line is red.
+- loadsa's idempotence check treats ANY live payload as "already active", so
+  an upgrade needs a Dock restart (killall Dock; SpaceBadge re-injects the
+  on-disk osax within ~2s, passwordless through the pin). This session hit
+  exactly that: install-sa left v4 serving because the socket answered.
+- The Dock now runs a byte-pattern scan of its own __TEXT at payload
+  constructor time (cheap, read-only) and one foreign C call per create/
+  destroy. A future OS that drifts the patterns keeps stick/sw/badge fully
+  working; only create/rm falls back to MC.
+- Destroying the ACTIVE space through the payload relies on the Dock's own
+  remove_space to pick the next space plus our _currentSpace resync (yabai's
+  post-destroy fix). Verified live once; a future Dock that reorders this
+  would show up as a stale current space, not a crash.
+[Testing Notes]
+- Static first: both patterns exactly 1 hit across the whole arm64e slice
+  (python re scan); disassembly of both routines matches #2832's arg
+  descriptions; stub resolution via dyld_info -fixups confirmed the
+  CGSMoveManagedSpaceToDisplayIndex / SLSTransactionCreate/DestroySpace/
+  Commit calls; the live sa-dump class report confirmed every ivar offset
+  used (spaces +56, _currentSpace +88, _displaySpaces +24, _spid +8).
+- Live on 26A428, Dock v6 symbols 0x1f: `create "sa-test"` -> "created
+  Desktop 8 (space 393)" in 0.386s total, no MC flash, space present in
+  CGSCopyManagedDisplaySpaces (spacetool list). `rm "sa-test"` -> 0.316s.
+  Hard path: create -> switch onto it -> rm while ACTIVE -> removed and
+  current falls back to comms, Dock model and CGS agree.
+- Crash guard (the #2832 "CFEqual called with NULL first argument" Dock
+  crash): raw socket OP_SPACE_DESTROY with sid 0xdeadbeef -> err -2
+  (SPACEC_BAD_SID), Dock alive and still serving HELLO v6. Same for
+  OP_SPACE_CREATE with a bogus reference sid -> -2.
+- Not tested: the SPACETOOL_MC forced fallback (the AX path is the previous
+  production code, unchanged) and multi-display create (the reference sid
+  picks the current display; the unified-space experiment will exercise
+  the three-monitor case).
+
 [2026-10-01 21:04:49 UTC] [loadsa/Investigation: phase 3 step 1, WindowManager injection closed]
 [Attempt #1]
 [What landed]

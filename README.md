@@ -111,6 +111,51 @@ file is checked for changes every 2s, and a full resync runs every 15s. A resync
 `NSApplicationDidChangeScreenParametersNotification` (a dock or undock fires it
 repeatedly and `visibleFrame` keeps moving for a beat after the last one).
 
+## SpaceView
+
+`~/Applications/SpaceView.app`, kept alive by the LaunchAgent
+`dev.umanzor.spaceview`. A resident stand-in for Mission Control's space
+picker: `spacetool view` toggles a panel listing the spaces of the display
+under the mouse, each with a preview, its number and its name. `1`-`9` switch
+to that space with no slide, Esc closes it. The right half is empty for now.
+
+Mission Control is slow to show previews because the Dock renders them on
+demand. SpaceView keeps them warm instead. `SLSHWCaptureSpace` captures any
+space, off-screen ones included, in 50-170ms at 4608x2592 counting the
+downscale to 960x540, so a capture never runs on the open path. The panel
+shows what is cached and refreshes the current space in the background. Spaces
+are captured at launch, when you leave them, the first time a new space is
+shown, and the current one every 120s while idle. Each cached space costs
+about 2MB.
+
+The capture leaves out every window that is on all spaces. `sharingType` makes
+no difference; `canJoinAllSpaces` does (`spaceview --probe-sharing` measures
+it). That is why the panel can refresh a preview while it is up without
+landing in its own shot, and also why windows pinned with `stick` are missing
+from previews.
+
+The key tap is armed only while the panel is up. Digits up to the last space
+and Esc are swallowed. Everything else passes through, modifier+digit and
+digits past the last space included. Without Accessibility there is no tap, so
+the panel opens but ignores keys; `spacetool view` again closes it. Without
+Screen Recording the cells show number and name only.
+
+A digit switches through the payload's instant op under the same lock as `sw`.
+If the payload is missing or older than v7, it falls back to
+`SpaceTool switch N`, but only for spaces on the first display, because `sw`
+resolves a bare number against the first display that has it. A switch the
+Dock accepted but CGS did not confirm within a second is not retried, since it
+may still land.
+
+With Mission Control open, the panel shows above it. A digit closes MC first,
+then switches; a digit for the space you are on just closes MC.
+
+Each open logs its latency (`/usr/bin/log show --predicate
+'process == "SpaceView"'`; zsh has its own `log` builtin). `spaceview --bench
+[passes]` prints capture timings, footprint and the IOSurface region count. A
+leaked capture only shows up in that count, because captures are
+IOSurface-backed and not charged to the footprint.
+
 ## How it works
 
 Window moves go through the private SkyLight bridge class
@@ -153,6 +198,8 @@ Gotchas learned the hard way:
   sticks.
 - Ordering a window front while Mission Control is open dismisses Mission
   Control. The strip is pre-created at alpha 0 and toggled by alpha only.
+  That was learned on SpaceBadge's strip. SpaceView's panel (level 101,
+  `orderFrontRegardless`) does not dismiss MC on macOS 27; it shows above it.
 - Mission Control detection: Dock gains onscreen windows at layer 18 while MC
   is up. Polled at 300ms.
 - Do not switch spaces with `SLSBridgedManagedDisplaySetCurrentSpaceOperation`.
@@ -247,10 +294,19 @@ Binaries must live inside an .app bundle; the WindowManagement XPC service
 rejects bare executables. `~/.local/bin/{spacename,sw,bring}` are shims into
 SpaceTool.app.
 
+**SpaceView.** `make view-dev` builds a signed `build/SpaceView.app` that
+runs in place, and `make install-view-agent` installs it and loads its agent
+the same way `install-agent` does for SpaceBadge (neither touches the other).
+The bundle identifier and designated requirement match between the two, so
+grants made for one carry to the other. To get the Screen Recording and
+Accessibility prompts, launch `SpaceView.app --request-access` through `open`;
+run directly from a terminal, TCC attributes the request to the terminal.
+
 ## Uninstall
 
 ```sh
 make uninstall   # daemon, LaunchAgent, both bundles, all three shims
+make uninstall-view   # SpaceView, its LaunchAgent and bundle
 ```
 
 Two things it deliberately leaves: `~/.config/spacenames.json`, so your names

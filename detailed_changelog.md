@@ -1,7 +1,7 @@
 [2026-10-02 21:33:56 UTC] [SpaceView/Feature: click a sidebar cell to switch (66c26e6), README 599ae0b eb3ecdc c87b59f cbfaad1]
 [Attempt #1]
 [Files Changed]
-- spaceview.m (66c26e6): new CellView per cell holding its ordinal. mouseDown only tints; mouseUp acts if the pointer is still inside the cell, then the shared `fired` check (one switch per show, digits and clicks both), then switchToOrd, the same path as a digit. acceptsFirstMouse returns YES and hitTest: returns the cell itself, so a click on the name-label strip is not swallowed by the label. Hover highlight via a tracking area with NSTrackingActiveAlways, since SpaceView is never the active app. The highlight is cleared on hide because a hide under the pointer never gets mouseExited.
+- spaceview.m (66c26e6): new CellView per cell holding its ordinal. mouseDown only tints; mouseUp acts if the pointer is still inside the cell, then the shared `fired` check (one switch per show, digits and clicks both), then switchToOrd, the same path as a digit. acceptsFirstMouse returns YES and hitTest: returns the cell itself, so a click on the name-label strip is not swallowed by the label. Hover highlight via a tracking area with NSTrackingActiveAlways, since SpaceView is never the active app. The highlight is cleared on mouseUp and on the next show (refreshCellContents), because a hide under the pointer never gets mouseExited.
 - README.md: SpaceView section gains the click behavior (599ae0b), a note that clicks work without Accessibility (eb3ecdc), and wording fixes from review plus install-view (cbfaad1, c87b59f).
 [Possible Ripple Effects]
 - Clicks need no Accessibility grant, only the key tap does; with Accessibility missing the panel still opens and a click can switch or close it.

@@ -295,8 +295,9 @@ rejects bare executables. `~/.local/bin/{spacename,sw,bring}` are shims into
 SpaceTool.app.
 
 **SpaceView.** `make view-dev` builds a signed `build/SpaceView.app` that
-runs in place, and `make install-view-agent` installs it and loads its agent
-the same way `install-agent` does for SpaceBadge (neither touches the other).
+runs in place. `make install-view` bundles it into `~/Applications` only, and
+`make install-view-agent` does that and loads its agent the same way
+`install-agent` does for SpaceBadge (neither touches the other).
 The bundle identifier and designated requirement match between the two, so
 grants made for one carry to the other. To get the Screen Recording and
 Accessibility prompts, launch `SpaceView.app --request-access` through `open`;

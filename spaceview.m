@@ -1060,6 +1060,9 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     NSInteger cur = 0;
     for (NSUInteger i = 0; i < self.shown.count; i++) if ([self.shown[i][@"current"] boolValue]) cur = i;
     [self selectIndex:cur];
+    // the space you are on is the one most likely changed since it was last
+    // left; queued, never captured here, and the cached render stays up meanwhile
+    if (self.shown.count) [self captureWindowsOf:[self.shown[cur][@"sid"] unsignedLongLongValue] urgent:YES];
     uint64_t tPrep = nowNs();
     fired = NO;
     atomic_store(&panelVisible, true);
@@ -1082,6 +1085,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 }
 
 - (void)hide {
+    if (atomic_load(&panelVisible)) LOG("hide");
     if (keyTap) CGEventTapEnable(keyTap, false);
     atomic_store(&panelVisible, false);
     [self.panel orderOut:nil];

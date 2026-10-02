@@ -1051,7 +1051,12 @@ int main(int argc, char **argv) {
     [viewer captureAll];
     [viewer prewarm];
 
-    [[NSDistributedNotificationCenter defaultCenter] addObserverForName:kToggle object:nil
+    // a dev build next to the installed agent listens on its own name, or one
+    // spacetool view would open both panels
+    const char *dev = getenv("SPACEVIEW_TOGGLE");
+    NSString *toggle = dev && *dev ? @(dev) : kToggle;
+    LOG("toggle notification %{public}@", toggle);
+    [[NSDistributedNotificationCenter defaultCenter] addObserverForName:toggle object:nil
         queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
             [viewer toggle:[n.userInfo[@"t"] unsignedLongLongValue]];
         }];

@@ -775,7 +775,8 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     WinSpace *ws = self.winCache[@(sid)];
     NSArray *list = ws.list ?: @[];
     int n = (int)list.count;
-    self.paneNote.stringValue = !ws ? @"capturing windows…" : n ? @"" : @"no windows";
+    self.paneNote.stringValue = !previewsOn ? @"previews off: no Screen Recording grant"
+        : !ws ? @"capturing windows…" : n ? @"" : @"no windows";
     self.paneNote.hidden = n > 0;
     CGRect *frames = calloc(MAX(n, 1), sizeof *frames), *out = calloc(MAX(n, 1), sizeof *out);
     for (int i = 0; i < n; i++) frames[i] = NSRectToCGRect([list[i][@"frame"] rectValue]);

@@ -13,13 +13,26 @@
 typedef int (*ConnFn)(void);
 typedef CFArrayRef (*MDSFn)(int);
 typedef CFArrayRef (*CaptureSpaceFn)(int, uint64_t, uint32_t);
+typedef CFArrayRef (*CopyWindowsFn)(int, uint32_t, CFArrayRef, uint32_t, uint64_t *, uint64_t *);
+typedef CFArrayRef (*CaptureWindowsFn)(int, uint32_t *, int, uint32_t);
+typedef CFArrayRef (*CopySpacesFn)(int, int, CFArrayRef);
 
 static int cid;
 static MDSFn mdsF;
 static CaptureSpaceFn captureF;
+static CopyWindowsFn copyWindowsF;
+static CaptureWindowsFn captureWindowsF;
+static CopySpacesFn copySpacesF;
 
 static NSString *const kToggle = @"dev.umanzor.spaceview.toggle";
 static const CGFloat kPreviewW = 960, kPreviewH = 540;
+// fixed, not the drawn size, so a relayout never needs a recapture
+static const CGFloat kWindowImgW = 640, kWindowImgH = 400;
+// nominal bytes (footprint does not see IOSurface-backed captures); ~40 windows
+// at the cap, keeping the 62MB phase 1 warm figure plus this under 120MB
+static const size_t kWindowCacheCap = 40u << 20;
+// stuck windows show up on every space's list; one filter so it stays a one-line change
+static const BOOL kExcludeStuckWindows = YES;
 static const NSWindowCollectionBehavior kPanelBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
     NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorStationary |
     NSWindowCollectionBehaviorIgnoresCycle;
@@ -92,32 +105,91 @@ static uint64_t physFootprint(void) {
     return info.phys_footprint;
 }
 
-// returns +1. The full-res capture (~48MB at 4608x2592) dies inside the pool;
-// only the downscaled bitmap leaves this function
+// returns +1, never larger than maxW x maxH and never upscaled
+static CGImageRef downscale(CGImageRef full, CGFloat maxW, CGFloat maxH) {
+    size_t w = CGImageGetWidth(full), h = CGImageGetHeight(full);
+    if (!w || !h) return NULL;
+    double k = fmin(1.0, fmin(maxW / w, maxH / h));
+    size_t sw = MAX(1, (size_t)lround(w * k)), sh = MAX(1, (size_t)lround(h * k));
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = CGBitmapContextCreate(NULL, sw, sh, 8, 0, cs,
+        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return NULL;
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, sw, sh), full);
+    CGImageRef out = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    return out;
+}
+
+static size_t nominalBytes(CGImageRef img) {
+    return img ? CGImageGetBytesPerRow(img) * CGImageGetHeight(img) : 0;
+}
+
+// both captures return +1 and are IOSurface-backed: the full-res image dies
+// inside the pool, only the downscale leaves
 static CGImageRef captureSpaceScaled(uint64_t sid, double *ms) {
     CGImageRef out = NULL;
     uint64_t t0 = nowNs();
     @autoreleasepool {
         CFArrayRef imgs = captureF ? captureF(cid, sid, 0) : NULL;
-        if (imgs && CFArrayGetCount(imgs)) {
-            CGImageRef full = (CGImageRef)CFArrayGetValueAtIndex(imgs, 0);
-            size_t w = CGImageGetWidth(full), h = CGImageGetHeight(full);
-            double k = fmin(kPreviewW / w, kPreviewH / h);
-            size_t sw = MAX(1, (size_t)lround(w * k)), sh = MAX(1, (size_t)lround(h * k));
-            CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-            CGContextRef ctx = CGBitmapContextCreate(NULL, sw, sh, 8, 0, cs,
-                kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
-            CGColorSpaceRelease(cs);
-            if (ctx) {
-                CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
-                CGContextDrawImage(ctx, CGRectMake(0, 0, sw, sh), full);
-                out = CGBitmapContextCreateImage(ctx);
-                CGContextRelease(ctx);
-            }
-        }
+        if (imgs && CFArrayGetCount(imgs))
+            out = downscale((CGImageRef)CFArrayGetValueAtIndex(imgs, 0), kPreviewW, kPreviewH);
         if (imgs) CFRelease(imgs);
     }
     if (ms) *ms = (nowNs() - t0) / 1e6;
+    return out;
+}
+
+static CGImageRef captureWindowScaled(uint32_t wid, double *ms) {
+    CGImageRef out = NULL;
+    uint64_t t0 = nowNs();
+    @autoreleasepool {
+        // 0x800|0x200: the probe's flags; they capture off-space windows at nominal res
+        CFArrayRef imgs = captureWindowsF ? captureWindowsF(cid, &wid, 1, 0x800 | 0x200) : NULL;
+        if (imgs && CFArrayGetCount(imgs))
+            out = downscale((CGImageRef)CFArrayGetValueAtIndex(imgs, 0), kWindowImgW, kWindowImgH);
+        if (imgs) CFRelease(imgs);
+    }
+    if (ms) *ms = (nowNs() - t0) / 1e6;
+    return out;
+}
+
+static NSDictionary<NSNumber *, NSDictionary *> *windowInfoByWid(void) {
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    for (NSDictionary *w in (NSArray *)CFBridgingRelease(CGWindowListCopyWindowInfo(
+            kCGWindowListOptionAll, kCGNullWindowID)))
+        if (w[(id)kCGWindowNumber]) out[w[(id)kCGWindowNumber]] = w;
+    return out;
+}
+
+static BOOL windowIsStuck(uint32_t wid) {
+    if (!copySpacesF) return NO;
+    NSArray *on = CFBridgingRelease(copySpacesF(cid, 7, (__bridge CFArrayRef)@[@(wid)]));
+    return on.count > 1;
+}
+
+// the windows a pane shows for sid, in the order SkyLight returns them, with
+// the probe's filter: layer 0, at least 120x120, known to CGWindowList
+static NSArray<NSDictionary *> *windowsOnSpace(uint64_t sid, NSDictionary *info, int *stuckOut) {
+    NSMutableArray *out = [NSMutableArray array];
+    if (!copyWindowsF) return out;
+    uint64_t set = 0, clr = 0;
+    NSArray *wids = CFBridgingRelease(copyWindowsF(cid, 0, (__bridge CFArrayRef)@[@(sid)], 0x2, &set, &clr));
+    int stuck = 0, z = 0;
+    for (NSNumber *n in wids) {
+        NSDictionary *w = info[n];
+        if (!w || [w[(id)kCGWindowLayer] intValue] != 0) continue;
+        CGRect b;
+        if (!CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)w[(id)kCGWindowBounds], &b)) continue;
+        if (b.size.width < 120 || b.size.height < 120) continue;
+        if (windowIsStuck(n.unsignedIntValue)) { stuck++; if (kExcludeStuckWindows) continue; }
+        [out addObject:@{ @"wid": n, @"pid": w[(id)kCGWindowOwnerPID] ?: @0,
+            @"app": w[(id)kCGWindowOwnerName] ?: @"", @"title": w[(id)kCGWindowName] ?: @"",
+            @"frame": [NSValue valueWithRect:NSRectFromCGRect(b)], @"z": @(z++) }];
+    }
+    if (stuckOut) *stuckOut = stuck;
     return out;
 }
 
@@ -285,6 +357,16 @@ static void switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
 @implementation Cell
 @end
 
+// one space's windows: the list from its last refresh and the images captured since
+@interface WinSpace : NSObject
+@property NSArray<NSDictionary *> *list;
+@property NSMutableDictionary<NSNumber *, id> *images;   // wid -> CGImage
+@property size_t bytes;
+@property uint64_t lastSelected;   // eviction order; set at creation so a just-left space is not first out
+@end
+@implementation WinSpace
+@end
+
 @interface Viewer : NSObject
 @property NSPanel *panel;
 @property NSScrollView *sidebar;
@@ -295,7 +377,11 @@ static void switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
 @property NSString *shownKey;             // sid/ord/name signature the cells were built from
 @property NSMutableDictionary<NSNumber *, id> *previews;   // sid -> CGImage
 @property NSMutableDictionary<NSString *, NSNumber *> *lastCurrent;   // display -> sid
-@property NSMutableSet<NSNumber *> *pending;   // sids queued on captureQ, main-thread only
+@property NSMutableArray<NSDictionary *> *jobs;   // capture worker queue, main-thread only
+@property NSMutableSet<NSString *> *jobKeys;        // queued or in flight, for coalescing
+@property BOOL working;
+@property NSMutableDictionary<NSNumber *, WinSpace *> *winCache;   // sid -> windows
+@property size_t winBytes;
 @property BOOL screensMoved;
 @end
 
@@ -330,7 +416,9 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
     _cells = [NSMutableArray array];
     _previews = [NSMutableDictionary dictionary];
     _lastCurrent = [NSMutableDictionary dictionary];
-    _pending = [NSMutableSet set];
+    _jobs = [NSMutableArray array];
+    _jobKeys = [NSMutableSet set];
+    _winCache = [NSMutableDictionary dictionary];
     [self buildPanel];
     return self;
 }
@@ -449,23 +537,147 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     if (self.panel.visible) [self refreshCellContents];
 }
 
+// --- capture worker ---
+// one capture at a time on captureQ. Urgent jobs (a selected, uncached space)
+// go to the front, so they wait behind at most the one capture in flight
+// rather than a whole leave batch of windows at 15-20ms each
+
+- (void)enqueue:(NSDictionary *)job urgent:(BOOL)urgent {
+    if ([self.jobKeys containsObject:job[@"key"]]) {
+        if (!urgent) return;
+        // promote a queued job; one already in flight is left alone
+        NSUInteger i = [self.jobs indexOfObjectPassingTest:^BOOL(NSDictionary *j, NSUInteger k, BOOL *stop) {
+            return [j[@"key"] isEqualToString:job[@"key"]]; }];
+        if (i == NSNotFound || i == 0) return;
+        NSDictionary *j = self.jobs[i];
+        [self.jobs removeObjectAtIndex:i];
+        [self.jobs insertObject:j atIndex:0];
+        return;
+    }
+    [self.jobKeys addObject:job[@"key"]];
+    if (urgent) [self.jobs insertObject:job atIndex:0]; else [self.jobs addObject:job];
+    [self pump];
+}
+
+- (void)pump {
+    if (self.working || !self.jobs.count) return;
+    NSDictionary *job = self.jobs.firstObject;
+    [self.jobs removeObjectAtIndex:0];
+    NSString *kind = job[@"kind"];
+    uint64_t sid = [job[@"sid"] unsignedLongLongValue];
+    if ([kind isEqualToString:@"window"] && ![self makeRoomForSid:sid]) {
+        [self.jobKeys removeObject:job[@"key"]];
+        [self pump];
+        return;
+    }
+    self.working = YES;
+    void (^done)(void (^)(void)) = ^(void (^apply)(void)) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            apply();
+            [self.jobKeys removeObject:job[@"key"]];
+            self.working = NO;
+            [self pump];
+        });
+    };
+    if ([kind isEqualToString:@"preview"]) {
+        dispatch_async(captureQ, ^{
+            double ms = 0;
+            CGImageRef img = captureSpaceScaled(sid, &ms);
+            LOG("captured %llu in %.1fms", sid, ms);
+            done(^{ [self storePreview:img sid:sid]; if (img) CGImageRelease(img); });
+        });
+    } else if ([kind isEqualToString:@"list"]) {
+        BOOL urgent = [job[@"urgent"] boolValue];
+        dispatch_async(captureQ, ^{
+            int stuck = 0;
+            NSArray *list = windowsOnSpace(sid, windowInfoByWid(), &stuck);
+            done(^{ [self storeList:list sid:sid stuck:stuck urgent:urgent]; });
+        });
+    } else {
+        uint32_t wid = [job[@"wid"] unsignedIntValue];
+        dispatch_async(captureQ, ^{
+            double ms = 0;
+            CGImageRef img = captureWindowScaled(wid, &ms);
+            done(^{ [self storeWindow:img wid:wid sid:sid ms:ms]; if (img) CGImageRelease(img); });
+        });
+    }
+}
+
 // safe while the panel is up: SLSHWCaptureSpace leaves out all-spaces windows
 // (measured with --probe-sharing), which also means stuck windows are missing
 - (void)captureSid:(uint64_t)sid {
     if (!previewsOn) return;
-    // rapid toggles would otherwise stack 60-130ms captures of the same space
-    if ([self.pending containsObject:@(sid)]) return;
-    [self.pending addObject:@(sid)];
-    dispatch_async(captureQ, ^{
-        double ms = 0;
-        CGImageRef img = captureSpaceScaled(sid, &ms);
-        LOG("captured %llu in %.1fms", sid, ms);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self.pending removeObject:@(sid)];
-            [self storePreview:img sid:sid];
-            if (img) CGImageRelease(img);
-        });
-    });
+    [self enqueue:@{ @"kind": @"preview", @"sid": @(sid),
+                     @"key": [NSString stringWithFormat:@"p%llu", sid] } urgent:NO];
+}
+
+// the list first, then one job per window, all at the same priority
+- (void)captureWindowsOf:(uint64_t)sid urgent:(BOOL)urgent {
+    if (!previewsOn || !copyWindowsF || !captureWindowsF) return;
+    [self enqueue:@{ @"kind": @"list", @"sid": @(sid), @"urgent": @(urgent),
+                     @"key": [NSString stringWithFormat:@"l%llu", sid] } urgent:urgent];
+}
+
+- (void)storeList:(NSArray *)list sid:(uint64_t)sid stuck:(int)stuck urgent:(BOOL)urgent {
+    WinSpace *ws = self.winCache[@(sid)];
+    if (!ws) {
+        ws = [WinSpace new];
+        ws.images = [NSMutableDictionary dictionary];
+        ws.lastSelected = nowNs();
+        self.winCache[@(sid)] = ws;
+    }
+    ws.list = list;
+    NSMutableSet *live = [NSMutableSet set];
+    for (NSDictionary *w in list) [live addObject:w[@"wid"]];
+    for (NSNumber *wid in ws.images.allKeys)
+        if (![live containsObject:wid]) [self dropImage:wid from:ws];
+    LOG("space %llu: %lu windows (%d stuck skipped)", sid, (unsigned long)list.count, stuck);
+    // urgent jobs go to the front one by one, so add them in reverse to keep z order
+    NSEnumerator *e = urgent ? list.reverseObjectEnumerator : list.objectEnumerator;
+    for (NSDictionary *w in e)
+        [self enqueue:@{ @"kind": @"window", @"sid": @(sid), @"wid": w[@"wid"],
+            @"key": [NSString stringWithFormat:@"w%llu:%@", sid, w[@"wid"]] } urgent:urgent];
+}
+
+- (void)dropImage:(NSNumber *)wid from:(WinSpace *)ws {
+    id img = ws.images[wid];
+    if (!img) return;
+    size_t b = nominalBytes((__bridge CGImageRef)img);
+    ws.bytes -= b;
+    self.winBytes -= b;
+    [ws.images removeObjectForKey:wid];
+}
+
+- (void)storeWindow:(CGImageRef)img wid:(uint32_t)wid sid:(uint64_t)sid ms:(double)ms {
+    WinSpace *ws = self.winCache[@(sid)];
+    if (!ws || !img) return;   // evicted or forgotten while in flight
+    [self dropImage:@(wid) from:ws];
+    size_t b = nominalBytes(img);
+    ws.images[@(wid)] = (__bridge id)img;
+    ws.bytes += b;
+    self.winBytes += b;
+    LOG("window %u on %llu in %.1fms, cache %.1fMB", wid, sid, ms, self.winBytes / 1048576.0);
+}
+
+// the in-flight capture counts against the cap: reserve its worst case before
+// starting it. Evicts whole spaces, least recently selected first; never sid
+// itself or a space that is current
+- (BOOL)makeRoomForSid:(uint64_t)sid {
+    size_t need = (size_t)kWindowImgW * (size_t)kWindowImgH * 4;
+    if (self.winBytes + need <= kWindowCacheCap) return YES;
+    NSMutableSet *keep = [NSMutableSet setWithObject:@(sid)];
+    [keep addObjectsFromArray:self.lastCurrent.allValues];
+    NSArray *order = [self.winCache.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
+        uint64_t x = self.winCache[a].lastSelected, y = self.winCache[b].lastSelected;
+        return x < y ? NSOrderedAscending : x > y ? NSOrderedDescending : NSOrderedSame; }];
+    for (NSNumber *k in order) {
+        if (self.winBytes + need <= kWindowCacheCap) break;
+        if ([keep containsObject:k]) continue;
+        LOG("evicting windows of %@ (%.1fMB)", k, self.winCache[k].bytes / 1048576.0);
+        self.winBytes -= self.winCache[k].bytes;
+        [self.winCache removeObjectForKey:k];
+    }
+    return self.winBytes + need <= kWindowCacheCap;
 }
 
 - (void)captureAll {
@@ -482,6 +694,10 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     NSMutableSet *live = [NSMutableSet set];
     for (NSDictionary *g in groups) for (NSDictionary *s in g[@"spaces"]) [live addObject:s[@"sid"]];
     for (NSNumber *k in self.previews.allKeys) if (![live containsObject:k]) [self.previews removeObjectForKey:k];
+    for (NSNumber *k in self.winCache.allKeys) if (![live containsObject:k]) {
+        self.winBytes -= self.winCache[k].bytes;
+        [self.winCache removeObjectForKey:k];
+    }
 }
 
 - (void)spaceChanged {
@@ -490,7 +706,10 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     [self forgetGoneSpaces:groups];
     for (NSDictionary *g in groups) {
         NSNumber *prev = self.lastCurrent[g[@"display"]];
-        if (prev && ![prev isEqual:g[@"current"]]) [self captureSid:prev.unsignedLongLongValue];
+        if (prev && ![prev isEqual:g[@"current"]]) {
+            [self captureSid:prev.unsignedLongLongValue];
+            [self captureWindowsOf:prev.unsignedLongLongValue urgent:NO];
+        }
         self.lastCurrent[g[@"display"]] = g[@"current"];
     }
 }
@@ -686,6 +905,58 @@ static int cmdBench(int passes) {
     return 0;
 }
 
+// window lists and captures for every user space, synchronously. Checks the
+// SkyLight order against the onscreen (front to back) order on current spaces
+static int cmdBenchWindows(int passes) {
+    if (!CGPreflightScreenCaptureAccess()) { fprintf(stderr, "spaceview: no Screen Recording grant\n"); return 1; }
+    printf("footprint start %.1fMB, iosurface regions %d\n", physFootprint() / 1048576.0, iosurfaceRegions());
+    NSMutableDictionary *keep = [NSMutableDictionary dictionary];
+    for (int p = 1; p <= passes; p++) @autoreleasepool {
+        double total = 0, worst = 0;
+        int n = 0;
+        size_t bytes = 0;
+        uint64_t tl = nowNs();
+        NSDictionary *info = windowInfoByWid();
+        double infoMs = (nowNs() - tl) / 1e6;
+        for (NSDictionary *g in displaySpaces())
+            for (NSDictionary *s in g[@"spaces"]) {
+                if ([s[@"type"] intValue] != 0) continue;
+                uint64_t sid = [s[@"sid"] unsignedLongLongValue];
+                int stuck = 0;
+                uint64_t t0 = nowNs();
+                NSArray *list = windowsOnSpace(sid, info, &stuck);
+                double listMs = (nowNs() - t0) / 1e6;
+                if (p == 1) {
+                    printf("  space %d sid=%llu: %lu windows, %d stuck skipped, list %.2fms\n",
+                           [s[@"ord"] intValue], sid, (unsigned long)list.count, stuck, listMs);
+                    if ([s[@"current"] boolValue]) {
+                        NSMutableArray *on = [NSMutableArray array];
+                        NSSet *mine = [NSSet setWithArray:[list valueForKey:@"wid"]];
+                        for (NSDictionary *w in (NSArray *)CFBridgingRelease(CGWindowListCopyWindowInfo(
+                                kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID)))
+                            if ([mine containsObject:w[(id)kCGWindowNumber]]) [on addObject:w[(id)kCGWindowNumber]];
+                        printf("    order vs onscreen front-to-back: %s\n    sls:      %s\n    onscreen: %s\n",
+                               [on isEqualToArray:[list valueForKey:@"wid"]] ? "same" : "DIFFERENT",
+                               [[list valueForKey:@"wid"] componentsJoinedByString:@","].UTF8String,
+                               [on componentsJoinedByString:@","].UTF8String);
+                    }
+                }
+                for (NSDictionary *w in list) {
+                    double ms = 0;
+                    CGImageRef img = captureWindowScaled([w[@"wid"] unsignedIntValue], &ms);
+                    total += ms; worst = fmax(worst, ms); n++;
+                    if (p == 1) printf("    wid %-6u %-18.18s %4zux%-4zu %.1fms%s\n", [w[@"wid"] unsignedIntValue],
+                        [w[@"app"] UTF8String], img ? CGImageGetWidth(img) : 0, img ? CGImageGetHeight(img) : 0,
+                        ms, img ? "" : " (no image)");
+                    if (img) { bytes += nominalBytes(img); keep[w[@"wid"]] = CFBridgingRelease(img); }
+                }
+            }
+        printf("pass %d: %d windows %.0fms (worst %.1f), info %.1fms, nominal %.1fMB, footprint %.1fMB, iosurface regions %d\n",
+               p, n, total, worst, infoMs, bytes / 1048576.0, physFootprint() / 1048576.0, iosurfaceRegions());
+    }
+    return 0;
+}
+
 // counts panel-colored pixels in a capture of the current space, with the panel
 // up as sharingType none and then readOnly
 static int cmdProbeSharing(void) {
@@ -747,16 +1018,20 @@ int main(int argc, char **argv) {
     cid = ((ConnFn)dlsym(h, "_CGSDefaultConnection"))();
     mdsF = (MDSFn)dlsym(h, "CGSCopyManagedDisplaySpaces");
     captureF = (CaptureSpaceFn)dlsym(h, "SLSHWCaptureSpace");
+    copyWindowsF = (CopyWindowsFn)dlsym(h, "SLSCopyWindowsWithOptionsAndTags");
+    captureWindowsF = (CaptureWindowsFn)dlsym(h, "SLSHWCaptureWindowList");
+    copySpacesF = (CopySpacesFn)dlsym(h, "CGSCopySpacesForWindows");
 
     NSString *mode = argc > 1 ? [NSString stringWithUTF8String:argv[1]] : @"";
     if ([mode isEqualToString:@"--bench"]) return cmdBench(argc > 2 ? MAX(1, atoi(argv[2])) : 1);
     if ([mode isEqualToString:@"--probe-sharing"]) return cmdProbeSharing();
+    if ([mode isEqualToString:@"--bench-windows"]) return cmdBenchWindows(argc > 2 ? MAX(1, atoi(argv[2])) : 1);
     if ([mode isEqualToString:@"--request-access"]) {
         BOOL ok = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess();
         AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{ (__bridge id)kAXTrustedCheckOptionPrompt: @YES });
         return ok ? 0 : 1;
     }
-    if (mode.length) { fprintf(stderr, "usage: spaceview [--bench [passes]|--probe-sharing|--request-access]\n"); return 2; }
+    if (mode.length) { fprintf(stderr, "usage: spaceview [--bench [passes]|--bench-windows [passes]|--probe-sharing|--request-access]\n"); return 2; }
 
     BOOL screenOK = CGPreflightScreenCaptureAccess(), axOK = AXIsProcessTrusted();
     LOG("pid %d, screen recording %d, accessibility %d, capture symbol %d",

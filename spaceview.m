@@ -246,8 +246,10 @@ static BOOL itemsOverlap(CGRect a, CGRect b, CGFloat gap) {
 // returns YES when it fell back to the grid
 static BOOL layoutWindows(const CGRect *frames, int n, CGRect pane, CGRect *out) {
     if (n <= 0) return NO;
+    // past 1e7 points a 12pt gap is lost to double precision; no real pane gets near
     if (!isfinite(pane.origin.x) || !isfinite(pane.origin.y) || !isfinite(pane.size.width) || !isfinite(pane.size.height)
-            || pane.size.width <= 0 || pane.size.height <= 0) {
+            || pane.size.width <= 0 || pane.size.height <= 0 || fabs(pane.origin.x) > 1e7 || fabs(pane.origin.y) > 1e7
+            || pane.size.width > 1e7 || pane.size.height > 1e7) {
         for (int i = 0; i < n; i++) out[i] = CGRectZero;
         return YES;
     }
@@ -264,13 +266,15 @@ static BOOL layoutWindows(const CGRect *frames, int n, CGRect pane, CGRect *out)
             minX = fmin(minX, x); minY = fmin(minY, y); maxX = fmax(maxX, x + sz[i].width); maxY = fmax(maxY, y + sz[i].height);
         }
         CGFloat k = fmin(inner.size.width / (maxX - minX), (inner.size.height - kLayoutLabelH) / (maxY - minY));
+        // origins past ~1e17 swallow the size (x + w == x), so the span is 0 and k is inf
+        if (!isfinite(k) || k <= 0) grid = YES;
         for (int i = 0; i < n; i++) {
             CGFloat x = isfinite(frames[i].origin.x) ? frames[i].origin.x : 0, y = isfinite(frames[i].origin.y) ? frames[i].origin.y : 0;
             cx[i] = inner.origin.x + (x - minX + sz[i].width / 2) * k;
             cy[i] = inner.origin.y + (y - minY + sz[i].height / 2) * k;
         }
         BOOL settled = NO;
-        for (int round = 0; round < 8 && !settled; round++) {
+        for (int round = 0; round < 8 && !settled && !grid; round++) {
             for (int it = 0; it < 64; it++) {
                 BOOL moved = NO;
                 for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) {
@@ -316,6 +320,9 @@ static BOOL layoutWindows(const CGRect *frames, int n, CGRect pane, CGRect *out)
                 if (itemsOverlap(a, b, 0)) grid = YES;
             }
             for (int i = 0; i < n && !grid; i++) if (out[i].size.width < kMinCellW && n > 1) grid = YES;
+            for (int i = 0; i < n && !grid; i++)
+                if (!isfinite(out[i].origin.x) || !isfinite(out[i].origin.y) || !isfinite(out[i].size.width) || !isfinite(out[i].size.height))
+                    grid = YES;
         } else grid = YES;
     }
     if (grid) gridLayout(sz, n, pane, out);
@@ -479,6 +486,15 @@ static void switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
 @property int ord;
 @end
 
+// one window in the right pane; the image is a sublayer so the label strip stays hit-testable
+@interface WinCellView : NSView
+@property CALayer *image;
+@property NSTextField *label;
+@property uint32_t wid;
+@end
+@implementation WinCellView
+@end
+
 @interface Cell : NSObject
 @property CellView *view;
 @property CALayer *preview;
@@ -513,6 +529,12 @@ static void switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
 @property NSMutableDictionary<NSNumber *, WinSpace *> *winCache;   // sid -> windows
 @property size_t winBytes;
 @property BOOL screensMoved;
+@property FlippedView *pane;                       // right side: the selected space's windows
+@property NSMutableArray<WinCellView *> *winCells; // reused across renders
+@property NSTextField *paneNote;                   // "no windows" / "capturing"
+@property NSInteger selected;                      // index into shown
+@property NSPoint showMouse;                       // pointer at order-in
+@property BOOL hoverArmed;                         // the pointer has really moved since then
 @end
 
 static Viewer *viewer;
@@ -549,6 +571,7 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
     _jobs = [NSMutableArray array];
     _jobKeys = [NSMutableSet set];
     _winCache = [NSMutableDictionary dictionary];
+    _winCells = [NSMutableArray array];
     [self buildPanel];
     return self;
 }
@@ -584,7 +607,12 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
     sv.documentView = _list;
     [bg addSubview:sv];
     _sidebar = sv;
-    // right pane stays empty until the window layout lands
+    _pane = [[FlippedView alloc] initWithFrame:NSZeroRect];
+    [bg addSubview:_pane];
+    _paneNote = [NSTextField labelWithString:@""];
+    _paneNote.textColor = NSColor.secondaryLabelColor;
+    _paneNote.alignment = NSTextAlignmentCenter;
+    [_pane addSubview:_paneNote];
     _panel = p;
     panelWid = (CGWindowID)p.windowNumber;
 }
@@ -608,6 +636,8 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     }
     [self.panel setFrame:r display:NO];
     self.sidebar.frame = NSMakeRect(0, 0, kSidebarW, r.size.height);
+    self.pane.frame = NSMakeRect(kSidebarW, 0, r.size.width - kSidebarW, r.size.height);
+    self.paneNote.frame = NSMakeRect(0, r.size.height / 2 - 12, r.size.width - kSidebarW, 24);
 }
 
 - (void)rebuildCellsIfNeeded:(NSArray *)spaces {
@@ -657,8 +687,79 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
         Cell *c = self.cells[i];
         c.preview.contents = self.previews[s[@"sid"]];
         c.preview.borderWidth = [s[@"current"] boolValue] ? 2 : 0;
-        c.view.layer.backgroundColor = nil;   // a hide under the pointer never gets mouseExited
+        c.view.layer.backgroundColor = (NSInteger)i == self.selected
+            ? [NSColor colorWithWhite:1 alpha:0.16].CGColor : nil;
     }
+}
+
+// --- selection and the right pane ---
+
+- (void)selectIndex:(NSInteger)i {
+    if (!self.shown.count) return;
+    i = MAX(0, MIN((NSInteger)self.shown.count - 1, i));   // clamp, no wrap
+    BOOL changed = i != self.selected;
+    self.selected = i;
+    uint64_t sid = [self.shown[i][@"sid"] unsignedLongLongValue];
+    WinSpace *ws = self.winCache[@(sid)];
+    if (ws) ws.lastSelected = nowNs();
+    else [self captureWindowsOf:sid urgent:YES];
+    if (changed || !ws) [self refreshCellContents];
+    [self renderPane];
+}
+
+- (uint64_t)selectedSid {
+    return self.selected < (NSInteger)self.shown.count ? [self.shown[self.selected][@"sid"] unsignedLongLongValue] : 0;
+}
+
+// cached images or placeholders, laid out by layoutWindows; never captures
+- (void)renderPane {
+    uint64_t sid = [self selectedSid];
+    WinSpace *ws = self.winCache[@(sid)];
+    NSArray *list = ws.list ?: @[];
+    int n = (int)list.count;
+    self.paneNote.stringValue = !ws ? @"capturing windows…" : n ? @"" : @"no windows";
+    self.paneNote.hidden = n > 0;
+    CGRect *frames = calloc(MAX(n, 1), sizeof *frames), *out = calloc(MAX(n, 1), sizeof *out);
+    for (int i = 0; i < n; i++) frames[i] = NSRectToCGRect([list[i][@"frame"] rectValue]);
+    layoutWindows(frames, n, self.pane.bounds, out);
+    while ((int)self.winCells.count < n) {
+        WinCellView *v = [[WinCellView alloc] initWithFrame:NSZeroRect];
+        v.wantsLayer = YES;
+        v.image = [CALayer layer];
+        v.image.contentsGravity = kCAGravityResizeAspect;
+        v.image.cornerRadius = 5;
+        v.image.masksToBounds = YES;
+        v.image.backgroundColor = [NSColor colorWithWhite:0 alpha:0.35].CGColor;
+        [v.layer addSublayer:v.image];
+        v.label = [NSTextField labelWithString:@""];
+        v.label.font = [NSFont systemFontOfSize:11];
+        v.label.textColor = NSColor.labelColor;
+        v.label.lineBreakMode = NSLineBreakByTruncatingTail;
+        v.label.alignment = NSTextAlignmentCenter;
+        [v addSubview:v.label];
+        [self.pane addSubview:v];
+        [self.winCells addObject:v];
+    }
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    for (int i = 0; i < (int)self.winCells.count; i++) {
+        WinCellView *v = self.winCells[i];
+        v.hidden = i >= n;
+        if (i >= n) { v.image.contents = nil; continue; }
+        NSDictionary *w = list[i];
+        CGRect r = out[i];
+        v.frame = NSMakeRect(r.origin.x, r.origin.y, r.size.width, r.size.height + kLayoutLabelH);
+        v.wid = [w[@"wid"] unsignedIntValue];
+        // the view is unflipped: the image sits above the label strip
+        v.image.frame = CGRectMake(0, kLayoutLabelH, r.size.width, r.size.height);
+        v.image.contents = ws.images[w[@"wid"]];   // nil draws the placeholder fill
+        NSString *t = [w[@"title"] length] ? [NSString stringWithFormat:@"%@ - %@", w[@"app"], w[@"title"]] : w[@"app"];
+        v.label.stringValue = t;
+        // explicit frame: autoresizing never refits a same-width string swap
+        v.label.frame = NSMakeRect(0, 1, r.size.width, kLayoutLabelH - 2);
+    }
+    [CATransaction commit];
+    free(frames); free(out);
 }
 
 - (void)storePreview:(CGImageRef)img sid:(uint64_t)sid {
@@ -765,6 +866,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     for (NSNumber *wid in ws.images.allKeys)
         if (![live containsObject:wid]) [self dropImage:wid from:ws];
     LOG("space %llu: %lu windows (%d stuck skipped)", sid, (unsigned long)list.count, stuck);
+    if (self.panel.visible && sid == [self selectedSid]) [self renderPane];
     // urgent jobs go to the front one by one, so add them in reverse to keep z order
     NSEnumerator *e = urgent ? list.reverseObjectEnumerator : list.objectEnumerator;
     for (NSDictionary *w in e)
@@ -790,6 +892,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     ws.bytes += b;
     self.winBytes += b;
     LOG("window %u on %llu in %.1fms, cache %.1fMB", wid, sid, ms, self.winBytes / 1048576.0);
+    if (self.panel.visible && sid == [self selectedSid]) [self renderPane];
 }
 
 // the in-flight capture counts against the cap: reserve its worst case before
@@ -884,6 +987,14 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 
 - (void)show:(uint64_t)sentNs received:(uint64_t)t0 {
     NSDictionary *g = [self prepareForScreen:screenUnderMouse()];
+    // the current space, even with the pointer resting on another cell: order-in
+    // fires mouseEntered without any motion
+    self.showMouse = [NSEvent mouseLocation];
+    self.hoverArmed = NO;
+    self.selected = -1;
+    NSInteger cur = 0;
+    for (NSUInteger i = 0; i < self.shown.count; i++) if ([self.shown[i][@"current"] boolValue]) cur = i;
+    [self selectIndex:cur];
     uint64_t tPrep = nowNs();
     fired = NO;
     atomic_store(&panelVisible, true);
@@ -923,6 +1034,23 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     dispatch_async(switchQ, ^{ switchToSpace(sid, ord, first); });
 }
 
+- (void)moveSelection:(NSInteger)d { [self selectIndex:self.selected + d]; }
+
+- (void)switchToSelected {
+    if (self.selected < 0 || self.selected >= (NSInteger)self.shown.count) return;
+    [self switchToOrd:[self.shown[self.selected][@"ord"] intValue]];
+}
+
+- (void)hoverIndexOf:(CellView *)v {
+    if (!self.hoverArmed) {
+        NSPoint p = [NSEvent mouseLocation];
+        if (fabs(p.x - self.showMouse.x) < 1 && fabs(p.y - self.showMouse.y) < 1) return;
+        self.hoverArmed = YES;
+    }
+    for (NSUInteger i = 0; i < self.cells.count; i++)
+        if (self.cells[i].view == v && (NSInteger)i != self.selected) { [self selectIndex:i]; return; }
+}
+
 - (BOOL)hasOrd:(int)ord {
     for (NSDictionary *s in self.shown) if ([s[@"ord"] intValue] == ord) return YES;
     return NO;
@@ -938,16 +1066,17 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     for (NSTrackingArea *a in self.trackingAreas) [self removeTrackingArea:a];
     // ActiveAlways: SpaceView is never the active app
     [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect
-        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
         owner:self userInfo:nil]];
 }
-- (void)mouseEntered:(NSEvent *)e { self.layer.backgroundColor = [NSColor colorWithWhite:1 alpha:0.12].CGColor; }
-- (void)mouseExited:(NSEvent *)e { self.layer.backgroundColor = nil; }
+// hover moves the selection, but only after real pointer motion since the open
+- (void)mouseEntered:(NSEvent *)e { [viewer hoverIndexOf:self]; }
+- (void)mouseMoved:(NSEvent *)e { [viewer hoverIndexOf:self]; }
 // act on the up: hiding on the down could hand the orphan mouseUp to whatever
 // window is under the pointer once the panel is gone
 - (void)mouseDown:(NSEvent *)e { self.layer.backgroundColor = [NSColor colorWithWhite:1 alpha:0.22].CGColor; }
 - (void)mouseUp:(NSEvent *)e {
-    self.layer.backgroundColor = nil;
+    [viewer refreshCellContents];   // back to the selection tint
     if (!NSPointInRect([self convertPoint:e.locationInWindow fromView:nil], self.bounds)) return;
     if (fired) return;
     fired = YES;
@@ -968,6 +1097,17 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
     BOOL repeat = CGEventGetIntegerValueField(e, kCGKeyboardEventAutorepeat) != 0;
     if (kc == 53) {
         if (!repeat) dispatch_async(dispatch_get_main_queue(), ^{ [viewer hide]; });
+        return NULL;
+    }
+    if (kc == 125 || kc == 126) {   // down, up: repeats allowed, they just keep moving
+        NSInteger step = kc == 125 ? 1 : -1;
+        dispatch_async(dispatch_get_main_queue(), ^{ [viewer moveSelection:step]; });
+        return NULL;
+    }
+    if (kc == 36 || kc == 76) {     // return, keypad enter
+        if (fired || repeat) return NULL;
+        fired = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{ [viewer switchToSelected]; });
         return NULL;
     }
     int d = digitForKeycode(kc);
@@ -1048,6 +1188,7 @@ static CGFloat fuzzVal(void) {
     if (r < 0.08) return 0;
     if (r < 0.11) return -(drand48() * 2000);
     if (r < 0.13) return 1e9;
+    if (r < 0.15) return (drand48() < 0.5 ? 1 : -1) * pow(10, 15 + drand48() * 6);   // 1e15..1e21: x + w == x
     return drand48();   // caller scales
 }
 static int cmdFuzzLayout(long iters, long seed) {
@@ -1064,6 +1205,11 @@ static int cmdFuzzLayout(long iters, long seed) {
                               odd ? fuzzVal() * 3000 : 120 + drand48() * 3000, odd ? fuzzVal() * 2000 : 120 + drand48() * 2000);
             // a third of runs stack windows on the same frame, the push-apart worst case
             if (i && drand48() < 0.33) f[i] = f[i - 1];
+        }
+        // every origin far out: x + w == x, so the frames' span collapses to 0
+        if (drand48() < 0.03) {
+            CGFloat far = (drand48() < 0.5 ? 1 : -1) * pow(10, 17 + drand48() * 4);
+            for (int i = 0; i < n; i++) { f[i].origin.x = far; f[i].origin.y = far; }
         }
         BOOL g = layoutWindows(f, n, pane, a);
         layoutWindows(f, n, pane, b);

@@ -139,10 +139,10 @@ last space and unmodified Esc are swallowed. Everything else passes through,
 modifier+digit and digits past the last space included. A click switches on
 mouse up inside the space it started on (dragging off cancels), takes the
 same path as its digit, and does not activate SpaceView or take focus from
-the front app; the first click works without focusing the panel. Without Accessibility there is no tap, so
-the panel opens but ignores keys; a click still switches, and `spacetool view`
-again closes it. Without
-Screen Recording the cells show number and name only.
+the front app; the first click works without focusing the panel. Without
+Accessibility there is no tap, so the panel opens but ignores keys; a click
+still switches, and `spacetool view` again closes it. Without Screen Recording
+the cells show number and name only.
 
 A digit switches through the payload's instant op under the same lock as `sw`.
 If the payload is missing, older than v7, lacks the symbols, refuses the

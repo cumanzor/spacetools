@@ -68,8 +68,8 @@
 - MC+digit (scratch probe replaying SpaceBadge's Escape -> wait -> switch):
   MC close ~0.5s, switch 0.2-0.7s under heavy load, no fallback on stderr.
 - BTT: execute_assigned_actions_for_trigger on both UUIDs steps 5->4->5.
-  osascript-synthesized hyper keypresses do not reach BTT hotkeys, so the
-  physical keys need one manual press.
+  osascript-synthesized hyper keypresses do not reach BTT hotkeys; the
+  physical hyper+Q/E were tested by the user and work.
 [Open]
 - One unreproduced refusal: animated switchToUserSpace: to index 5 right
   after an instant jump to 5, in a churn loop just after removing the active

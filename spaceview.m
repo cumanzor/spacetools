@@ -289,6 +289,7 @@ static CFMachPortRef keyTap;
 static atomic_bool panelVisible;
 static BOOL fired;   // one switch per show: a second digit would race the first
 static dispatch_queue_t captureQ, switchQ;
+static BOOL previewsOn;
 static CGWindowID panelWid;
 
 static BOOL panelOnScreen(void) {
@@ -433,6 +434,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 // safe while the panel is up: SLSHWCaptureSpace leaves out all-spaces windows
 // (measured with --probe-sharing), which also means stuck windows are missing
 - (void)captureSid:(uint64_t)sid {
+    if (!previewsOn) return;
     // rapid toggles would otherwise stack 60-130ms captures of the same space
     if ([self.pending containsObject:@(sid)]) return;
     [self.pending addObject:@(sid)];
@@ -711,7 +713,8 @@ int main(int argc, char **argv) {
     BOOL screenOK = CGPreflightScreenCaptureAccess(), axOK = AXIsProcessTrusted();
     LOG("pid %d, screen recording %d, accessibility %d, capture symbol %d",
         getpid(), screenOK, axOK, captureF != NULL);
-    if (!screenOK || !captureF) LOG("previews off");
+    previewsOn = screenOK && captureF;
+    if (!previewsOn) LOG("previews off");
     if (!axOK) LOG("keys off; spacetool view again to close");
     // a windowless accessory app reads as idle to automatic termination
     [NSProcessInfo.processInfo disableAutomaticTermination:@"resident switcher"];

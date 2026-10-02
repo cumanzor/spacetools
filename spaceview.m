@@ -526,6 +526,9 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     if (keyTap) CGEventTapEnable(keyTap, true);
     // cached shot goes up first; the fresh one replaces it ~100ms later
     if (g) [self captureSid:[g[@"current"] unsignedLongLongValue]];
+    // a space created since launch has never been left, so nothing captured it
+    for (NSDictionary *s in self.shown)
+        if (!self.previews[s[@"sid"]]) [self captureSid:[s[@"sid"] unsignedLongLongValue]];
 }
 
 - (void)hide {

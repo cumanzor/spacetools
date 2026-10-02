@@ -749,8 +749,9 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
         Cell *c = self.cells[i];
         c.preview.contents = self.previews[s[@"sid"]];
         c.preview.borderWidth = [s[@"current"] boolValue] ? 2 : 0;
+        // accent-tinted: a white wash disappears on the light HUD material
         c.view.layer.backgroundColor = (NSInteger)i == self.selected
-            ? [NSColor colorWithWhite:1 alpha:0.16].CGColor : nil;
+            ? [NSColor.controlAccentColor colorWithAlphaComponent:0.28].CGColor : nil;
     }
 }
 
@@ -766,6 +767,11 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     if (ws) ws.lastSelected = nowNs();
     else [self captureWindowsOf:sid urgent:YES];
     if (changed || !ws) [self refreshCellContents];
+    // arrows can walk past the visible part of the sidebar
+    if (i < (NSInteger)self.cells.count) {
+        NSView *v = self.cells[i].view;
+        [v scrollRectToVisible:v.bounds];
+    }
     [self renderPane];
 }
 

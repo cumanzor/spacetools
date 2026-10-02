@@ -116,8 +116,8 @@ repeatedly and `visibleFrame` keeps moving for a beat after the last one).
 `~/Applications/SpaceView.app`, kept alive by the LaunchAgent
 `dev.umanzor.spaceview`. A resident stand-in for Mission Control's space
 picker: `spacetool view` toggles a panel listing the spaces of the display
-under the mouse, each with a preview, its number and its name. `1`-`9` switch
-to that space with no slide, Esc closes it. The right half is empty for now.
+under the mouse, each with a preview, its number and its name. `1`-`9` or a
+click on a space switch to it with no slide, Esc closes it. The right half is empty for now.
 
 Mission Control is slow to show previews because the Dock renders them on
 demand. SpaceView keeps them warm instead. `SLSHWCaptureSpace` captures any
@@ -136,7 +136,10 @@ be missing from previews (not checked yet).
 
 The key tap is armed only while the panel is up. Unmodified digits up to the
 last space and unmodified Esc are swallowed. Everything else passes through,
-modifier+digit and digits past the last space included. Without Accessibility there is no tap, so
+modifier+digit and digits past the last space included. A click switches on
+mouse up inside the space it started on (dragging off cancels), takes the
+same path as its digit, and does not activate SpaceView or take focus from
+the front app; the first click works without focusing the panel. Without Accessibility there is no tap, so
 the panel opens but ignores keys; `spacetool view` again closes it. Without
 Screen Recording the cells show number and name only.
 
@@ -148,8 +151,8 @@ resolves a bare number against the first display that has it. A switch the
 Dock accepted but CGS did not confirm within a second is not retried, since it
 may still land.
 
-With Mission Control open, the panel shows above it. A digit closes MC first,
-then switches; a digit for the space you are on just closes MC.
+With Mission Control open, the panel shows above it. A digit or click closes
+MC first, then switches; one for the space you are on just closes MC.
 
 Each open logs its latency (`/usr/bin/log show --predicate
 'process == "SpaceView"'`; zsh has its own `log` builtin). `spaceview --bench

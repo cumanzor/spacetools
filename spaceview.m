@@ -201,7 +201,7 @@ static int lockSwitch(void) {
 }
 
 // blocking: run on switchQ only
-static void switchToSpace(uint64_t sid, int ord) {
+static void switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
     int lfd = lockSwitch();
     closeMissionControlBlocking();
     int32_t version = 0;
@@ -248,6 +248,14 @@ static void switchToSpace(uint64_t sid, int ord) {
         LOG("instant switch unavailable (%{public}s), using SpaceTool switch", why.UTF8String);
     }
     if (lfd >= 0) close(lfd);   // sw takes the same lock
+    // sw resolves a bare ordinal against the first display that has it, so on
+    // any other display it would switch the wrong space
+    if (!firstGroup) {
+        static BOOL said;
+        if (!said) LOG("no fallback for %d: not on the first display's space list", ord);
+        said = YES;
+        return;
+    }
     NSTask *t = [NSTask new];
     t.executableURL = [NSURL fileURLWithPath:[NSHomeDirectory()
         stringByAppendingPathComponent:@"Applications/SpaceTool.app/Contents/MacOS/SpaceTool"]];
@@ -277,6 +285,7 @@ static void switchToSpace(uint64_t sid, int ord) {
 @property FlippedView *list;
 @property NSMutableArray<Cell *> *cells;
 @property NSArray *shown;                 // spaces of the panel's display, sidebar order
+@property BOOL shownFirstGroup;           // shown came from the first CGS display group
 @property NSString *shownKey;             // sid/ord/name signature the cells were built from
 @property NSMutableDictionary<NSNumber *, id> *previews;   // sid -> CGImage
 @property NSMutableDictionary<NSString *, NSNumber *> *lastCurrent;   // display -> sid
@@ -492,6 +501,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     NSMutableArray *spaces = [NSMutableArray array];
     for (NSDictionary *s in g[@"spaces"]) if ([s[@"type"] intValue] == 0) [spaces addObject:s];
     self.shown = spaces;
+    self.shownFirstGroup = g == groups.firstObject;
     [self layoutForScreen:screen];
     [self rebuildCellsIfNeeded:spaces];
     [self refreshCellContents];
@@ -547,7 +557,8 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     // already there: still leave the user out of mission control, as a switch would
     if ([target[@"current"] boolValue]) { dispatch_async(switchQ, ^{ closeMissionControlBlocking(); }); return; }
     uint64_t sid = [target[@"sid"] unsignedLongLongValue];
-    dispatch_async(switchQ, ^{ switchToSpace(sid, ord); });
+    BOOL first = self.shownFirstGroup;
+    dispatch_async(switchQ, ^{ switchToSpace(sid, ord, first); });
 }
 
 - (BOOL)hasOrd:(int)ord {

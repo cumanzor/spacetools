@@ -410,7 +410,8 @@ static int lockSwitch(void) {
 }
 
 // blocking: run on switchQ only
-static void switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
+// blocking: run on switchQ only. YES once CGS reports sid current
+static BOOL switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
     int lfd = lockSwitch();
     closeMissionControlBlocking();
     int32_t version = 0;
@@ -437,7 +438,7 @@ static void switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
                 if (spaceIsCurrent(sid)) {
                     LOG("switched to %d in %.1fms", ord, (nowNs() - t0) / 1e6);
                     if (lfd >= 0) close(lfd);
-                    return;
+                    return YES;
                 }
                 usleep(10000);
             }
@@ -445,7 +446,7 @@ static void switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
             LOG("switch to %d unconfirmed: %{public}s", ord, !io ? "no reply from the payload"
                 : err == SPACEC_TIMEOUT ? "Dock main queue timed out" : "Dock accepted but CGS never got there");
             if (lfd >= 0) close(lfd);
-            return;
+            return NO;
         }
     }
     // sw's animated Dock switch, then its swipe; never the bridged set-current,
@@ -463,14 +464,71 @@ static void switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
         static BOOL said;
         if (!said) LOG("no fallback for %d: not on the first display's space list", ord);
         said = YES;
-        return;
+        return NO;
     }
     NSTask *t = [NSTask new];
     t.executableURL = [NSURL fileURLWithPath:[NSHomeDirectory()
         stringByAppendingPathComponent:@"Applications/SpaceTool.app/Contents/MacOS/SpaceTool"]];
     t.arguments = @[@"switch", [NSString stringWithFormat:@"%d", ord]];
     NSError *err = nil;
-    if (![t launchAndReturnError:&err]) LOG("SpaceTool switch failed to launch: %{public}@", err);
+    if (![t launchAndReturnError:&err]) { LOG("SpaceTool switch failed to launch: %{public}@", err); return NO; }
+    // the animated fallback slides for ~300ms; bounded so a stuck Dock cannot hold switchQ
+    for (int i = 0; i < 200; i++) { if (spaceIsCurrent(sid)) return YES; usleep(10000); }
+    LOG("fallback switch to %d not confirmed in 2s", ord);
+    return NO;
+}
+
+// --- focusing one window ---
+extern AXError _AXUIElementGetWindow(AXUIElementRef, CGWindowID *);
+
+static pid_t frontPid(void) {
+    __block pid_t p = 0;
+    // NSWorkspace wants the main thread
+    dispatch_sync(dispatch_get_main_queue(), ^{ p = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier; });
+    return p;
+}
+
+// blocking: run on switchQ only. Matches the AXWindow by window id, never by
+// title (terminals and browsers repeat titles), raises only that window, then
+// makes its app frontmost. Every AX call is bounded so a hung app cannot hold
+// switchQ for the default ~6s per message
+static void focusWindow(pid_t pid, uint32_t wid, uint64_t sid) {
+    uint64_t t0 = nowNs();
+    id app = CFBridgingRelease(AXUIElementCreateApplication(pid));
+    if (!app) return;
+    AXUIElementSetMessagingTimeout((__bridge AXUIElementRef)app, 0.5);
+    id win = nil;
+    // right after a switch the app's AX window list can lag the space change
+    for (int attempt = 0; attempt < 10 && !win; attempt++) {
+        CFArrayRef raw = NULL;
+        if (AXUIElementCopyAttributeValue((__bridge AXUIElementRef)app, kAXWindowsAttribute, (CFTypeRef *)&raw) == kAXErrorSuccess && raw) {
+            // hold the match as a strong id: under ARC at -O2 the array can be
+            // freed when enumeration ends (README gotcha)
+            for (id w in (__bridge_transfer NSArray *)raw) {
+                CGWindowID got = 0;
+                if (_AXUIElementGetWindow((__bridge AXUIElementRef)w, &got) == kAXErrorSuccess && got == wid) { win = w; break; }
+            }
+        }
+        if (!win) usleep(50000);
+    }
+    if (!win) { LOG("focus %u: window gone or not in AX, skipped", wid); return; }
+    AXUIElementSetMessagingTimeout((__bridge AXUIElementRef)win, 0.5);
+    AXError raise = AXUIElementPerformAction((__bridge AXUIElementRef)win, kAXRaiseAction);
+    AXUIElementSetAttributeValue((__bridge AXUIElementRef)win, kAXMainAttribute, kCFBooleanTrue);
+    AXError front = AXUIElementSetAttributeValue((__bridge AXUIElementRef)app, kAXFrontmostAttribute, kCFBooleanTrue);
+    // frontmost may be refused for a background accessory app; fall back to
+    // activating just that app (not ActivateAllWindows, which raises every window)
+    BOOL viaAX = YES;
+    for (int i = 0; i < 20 && frontPid() != pid; i++) usleep(10000);
+    if (frontPid() != pid) {
+        viaAX = NO;
+        [[NSRunningApplication runningApplicationWithProcessIdentifier:pid] activateWithOptions:0];
+        for (int i = 0; i < 30 && frontPid() != pid; i++) usleep(10000);
+    }
+    BOOL stayed = spaceIsCurrent(sid);
+    LOG("focus %u (pid %d): raise %d, frontmost %d via %{public}s, front now %d, space %{public}s, %.0fms",
+        wid, pid, raise, front, viaAX ? "AX" : "NSRunningApplication", frontPid() == pid,
+        stayed ? "kept" : "MOVED (switch-to-space-with-windows setting?)", (nowNs() - t0) / 1e6);
 }
 
 // --- panel ---
@@ -491,8 +549,8 @@ static void switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
 @property CALayer *image;
 @property NSTextField *label;
 @property uint32_t wid;
-@end
-@implementation WinCellView
+@property pid_t pid;
+@property uint64_t sid;   // the space it was listed under; the click re-resolves it
 @end
 
 @interface Cell : NSObject
@@ -750,6 +808,8 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
         CGRect r = out[i];
         v.frame = NSMakeRect(r.origin.x, r.origin.y, r.size.width, r.size.height + kLayoutLabelH);
         v.wid = [w[@"wid"] unsignedIntValue];
+        v.pid = [w[@"pid"] intValue];
+        v.sid = sid;
         // the view is unflipped: the image sits above the label strip
         v.image.frame = CGRectMake(0, kLayoutLabelH, r.size.width, r.size.height);
         v.image.contents = ws.images[w[@"wid"]];   // nil draws the placeholder fill
@@ -1034,6 +1094,34 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     dispatch_async(switchQ, ^{ switchToSpace(sid, ord, first); });
 }
 
+// switch to the window's space (resolved now, not from the cache: it may have
+// moved), wait for CGS to confirm, then focus it. On the current space: no switch
+- (void)focusWindowCell:(WinCellView *)v {
+    if (fired) return;
+    fired = YES;
+    uint32_t wid = v.wid;
+    pid_t pid = v.pid;
+    uint64_t sid = v.sid;
+    NSArray *on = copySpacesF ? CFBridgingRelease(copySpacesF(cid, 7, (__bridge CFArrayRef)@[@(wid)])) : nil;
+    BOOL gone = on.count == 0;
+    if (on.count == 1) sid = [on.firstObject unsignedLongLongValue];
+    NSDictionary *target = nil;
+    for (NSDictionary *s in self.shown) if ([s[@"sid"] unsignedLongLongValue] == sid) target = s;
+    BOOL here = spaceIsCurrent(sid);
+    int ord = [target[@"ord"] intValue];
+    BOOL first = self.shownFirstGroup;
+    [self hide];
+    if (!here && !target) { LOG("focus %u: its space %llu is not on this display, skipped", wid, sid); return; }
+    dispatch_async(switchQ, ^{
+        if (!here) {
+            closeMissionControlBlocking();
+            if (!switchToSpace(sid, ord, first)) { LOG("focus %u: switch unconfirmed, not focusing", wid); return; }
+        } else closeMissionControlBlocking();
+        if (gone) { LOG("focus %u: window vanished since capture, switch only", wid); return; }
+        focusWindow(pid, wid, sid);
+    });
+}
+
 - (void)moveSelection:(NSInteger)d { [self selectIndex:self.selected + d]; }
 
 - (void)switchToSelected {
@@ -1054,6 +1142,19 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 - (BOOL)hasOrd:(int)ord {
     for (NSDictionary *s in self.shown) if ([s[@"ord"] intValue] == ord) return YES;
     return NO;
+}
+@end
+
+@implementation WinCellView
+- (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
+// the label would otherwise take the hit over its strip
+- (NSView *)hitTest:(NSPoint)p { return !self.hidden && NSPointInRect(p, self.frame) ? self : nil; }
+- (void)mouseDown:(NSEvent *)e { self.layer.backgroundColor = [NSColor colorWithWhite:1 alpha:0.18].CGColor; }
+// on the up, inside, like the sidebar cells
+- (void)mouseUp:(NSEvent *)e {
+    self.layer.backgroundColor = nil;
+    if (!NSPointInRect([self convertPoint:e.locationInWindow fromView:nil], self.bounds)) return;
+    [viewer focusWindowCell:self];
 }
 @end
 

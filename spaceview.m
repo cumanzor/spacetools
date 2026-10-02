@@ -565,7 +565,8 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     [self.jobs removeObjectAtIndex:0];
     NSString *kind = job[@"kind"];
     uint64_t sid = [job[@"sid"] unsignedLongLongValue];
-    if ([kind isEqualToString:@"window"] && ![self makeRoomForSid:sid]) {
+    // a space evicted after its window jobs were queued: nothing to store into
+    if ([kind isEqualToString:@"window"] && (!self.winCache[@(sid)] || ![self makeRoomForSid:sid])) {
         [self.jobKeys removeObject:job[@"key"]];
         [self pump];
         return;
@@ -672,7 +673,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
         return x < y ? NSOrderedAscending : x > y ? NSOrderedDescending : NSOrderedSame; }];
     for (NSNumber *k in order) {
         if (self.winBytes + need <= kWindowCacheCap) break;
-        if ([keep containsObject:k]) continue;
+        if ([keep containsObject:k] || !self.winCache[k].bytes) continue;   // 0 bytes frees nothing
         LOG("evicting windows of %@ (%.1fMB)", k, self.winCache[k].bytes / 1048576.0);
         self.winBytes -= self.winCache[k].bytes;
         [self.winCache removeObjectForKey:k];

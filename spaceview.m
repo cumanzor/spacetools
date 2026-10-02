@@ -501,7 +501,11 @@ static void focusWindow(pid_t pid, uint32_t wid, uint64_t sid) {
     // right after a switch the app's AX window list can lag the space change
     for (int attempt = 0; attempt < 10 && !win; attempt++) {
         CFArrayRef raw = NULL;
-        if (AXUIElementCopyAttributeValue((__bridge AXUIElementRef)app, kAXWindowsAttribute, (CFTypeRef *)&raw) == kAXErrorSuccess && raw) {
+        AXError e = AXUIElementCopyAttributeValue((__bridge AXUIElementRef)app, kAXWindowsAttribute, (CFTypeRef *)&raw);
+        // CannotComplete is the messaging timeout: the app is not answering, and
+        // retrying would hold switchQ 0.5s a go
+        if (e == kAXErrorCannotComplete) { LOG("focus %u: pid %d not answering AX, skipped", wid, pid); return; }
+        if (e == kAXErrorSuccess && raw) {
             // hold the match as a strong id: under ARC at -O2 the array can be
             // freed when enumeration ends (README gotcha)
             for (id w in (__bridge_transfer NSArray *)raw) {

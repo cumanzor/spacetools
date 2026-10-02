@@ -543,7 +543,9 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     NSDictionary *target = nil;
     for (NSDictionary *s in self.shown) if ([s[@"ord"] intValue] == ord) target = s;
     [self hide];
-    if (!target || [target[@"current"] boolValue]) return;
+    if (!target) return;
+    // already there: still leave the user out of mission control, as a switch would
+    if ([target[@"current"] boolValue]) { dispatch_async(switchQ, ^{ closeMissionControlBlocking(); }); return; }
     uint64_t sid = [target[@"sid"] unsignedLongLongValue];
     dispatch_async(switchQ, ^{ switchToSpace(sid, ord); });
 }

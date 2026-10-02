@@ -271,8 +271,14 @@ static void switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
 - (BOOL)isFlipped { return YES; }
 @end
 
+// the panel is nonactivating and, being borderless, never becomes key, so a
+// click lands here without activating SpaceView or taking focus from the front app
+@interface CellView : NSView
+@property int ord;
+@end
+
 @interface Cell : NSObject
-@property NSView *view;
+@property CellView *view;
 @property CALayer *preview;
 @property NSTextField *label;
 @end
@@ -296,7 +302,7 @@ static void switchToSpace(uint64_t sid, int ord, BOOL firstGroup) {
 static Viewer *viewer;
 static CFMachPortRef keyTap;
 static atomic_bool panelVisible;
-static BOOL fired;   // one switch per show: a second digit would race the first
+static BOOL fired;   // one switch per show: a second digit or click would race the first
 static dispatch_queue_t captureQ, switchQ;
 static BOOL previewsOn;
 static CGWindowID panelWid;
@@ -398,8 +404,10 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     CGFloat y = kPad, w = kSidebarW - 2 * kPad;
     for (NSDictionary *s in spaces) {
         Cell *c = [Cell new];
-        c.view = [[NSView alloc] initWithFrame:NSMakeRect(kPad, y, w, th + kLabelH + 6)];
+        c.view = [[CellView alloc] initWithFrame:NSMakeRect(kPad, y, w, th + kLabelH + 6)];
         c.view.wantsLayer = YES;
+        c.view.ord = [s[@"ord"] intValue];
+        c.view.layer.cornerRadius = 8;
         CALayer *pv = [CALayer layer];
         pv.frame = CGRectMake(0, kLabelH + 6, w, th);   // layer coords are unflipped
         pv.contentsGravity = kCAGravityResizeAspect;
@@ -431,6 +439,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
         Cell *c = self.cells[i];
         c.preview.contents = self.previews[s[@"sid"]];
         c.preview.borderWidth = [s[@"current"] boolValue] ? 2 : 0;
+        c.view.layer.backgroundColor = nil;   // a hide under the pointer never gets mouseExited
     }
 }
 
@@ -564,6 +573,32 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 - (BOOL)hasOrd:(int)ord {
     for (NSDictionary *s in self.shown) if ([s[@"ord"] intValue] == ord) return YES;
     return NO;
+}
+@end
+
+@implementation CellView
+- (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
+// the name label would otherwise be the hit view over its strip and refuse the first mouse
+- (NSView *)hitTest:(NSPoint)p { return NSPointInRect(p, self.frame) ? self : nil; }
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea *a in self.trackingAreas) [self removeTrackingArea:a];
+    // ActiveAlways: SpaceView is never the active app
+    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        owner:self userInfo:nil]];
+}
+- (void)mouseEntered:(NSEvent *)e { self.layer.backgroundColor = [NSColor colorWithWhite:1 alpha:0.12].CGColor; }
+- (void)mouseExited:(NSEvent *)e { self.layer.backgroundColor = nil; }
+// act on the up: hiding on the down could hand the orphan mouseUp to whatever
+// window is under the pointer once the panel is gone
+- (void)mouseDown:(NSEvent *)e { self.layer.backgroundColor = [NSColor colorWithWhite:1 alpha:0.22].CGColor; }
+- (void)mouseUp:(NSEvent *)e {
+    self.layer.backgroundColor = nil;
+    if (!NSPointInRect([self convertPoint:e.locationInWindow fromView:nil], self.bounds)) return;
+    if (fired) return;
+    fired = YES;
+    [viewer switchToOrd:self.ord];
 }
 @end
 

@@ -1,3 +1,16 @@
+[2026-10-02 21:33:56 UTC] [SpaceView/Feature: click a sidebar cell to switch (66c26e6), README 599ae0b eb3ecdc c87b59f cbfaad1]
+[Attempt #1]
+[Files Changed]
+- spaceview.m (66c26e6): new CellView per cell holding its ordinal. mouseDown only tints; mouseUp acts if the pointer is still inside the cell, then the shared `fired` check (one switch per show, digits and clicks both), then switchToOrd, the same path as a digit. acceptsFirstMouse returns YES and hitTest: returns the cell itself, so a click on the name-label strip is not swallowed by the label. Hover highlight via a tracking area with NSTrackingActiveAlways, since SpaceView is never the active app. The highlight is cleared on hide because a hide under the pointer never gets mouseExited.
+- README.md: SpaceView section gains the click behavior (599ae0b), a note that clicks work without Accessibility (eb3ecdc), and wording fixes from review plus install-view (cbfaad1, c87b59f).
+[Possible Ripple Effects]
+- Clicks need no Accessibility grant, only the key tap does; with Accessibility missing the panel still opens and a click can switch or close it.
+- Acting on mouseUp means a press that is dragged off the cell cancels. The panel stays nonactivating, so the foreground app is unchanged.
+[Testing Notes]
+- Reviewer approved the code (p1-10, builds with -Wall -Wextra, 0 warnings). Coder live run, relayed and not reproduced by the reviewer: a label-strip click switched in 15ms, the front app stayed frontmost, SpaceView never became active.
+- Not run live: a click on the current space, and a click with Mission Control open (operator hand tests). The README lines saying a digit or click closes Mission Control and the current-space click rest on the shared switchToOrd path, verified live for digits only; they change if the hand tests fail.
+- A coder test restore step overrode an operator space move (4 to 5 undone), so scripted display tests are stopped while the operator is active.
+
 [2026-10-02 21:10:00 UTC] [SpaceView/Feature: resident space switcher panel, phase 1 (epic spacetools-6bq.1, GH #1)]
 [Attempt #1]
 [Files Changed]

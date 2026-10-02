@@ -125,23 +125,24 @@ space, off-screen ones included, in 50-170ms at 4608x2592 counting the
 downscale to 960x540, so a capture never runs on the open path. The panel
 shows what is cached and refreshes the current space in the background. Spaces
 are captured at launch, when you leave them, the first time a new space is
-shown, and the current one every 120s while idle. Each cached space costs
-about 2MB.
+shown, and the current one every 120s while idle. A cached preview is a
+960x540 bitmap, nominally 2MB.
 
 The capture leaves out every window that is on all spaces. `sharingType` makes
 no difference; `canJoinAllSpaces` does (`spaceview --probe-sharing` measures
 it). That is why the panel can refresh a preview while it is up without
-landing in its own shot, and also why windows pinned with `stick` are missing
-from previews.
+landing in its own shot. By the same rule, windows pinned with `stick` should
+be missing from previews (not checked yet).
 
-The key tap is armed only while the panel is up. Digits up to the last space
-and Esc are swallowed. Everything else passes through, modifier+digit and
-digits past the last space included. Without Accessibility there is no tap, so
+The key tap is armed only while the panel is up. Unmodified digits up to the
+last space and unmodified Esc are swallowed. Everything else passes through,
+modifier+digit and digits past the last space included. Without Accessibility there is no tap, so
 the panel opens but ignores keys; `spacetool view` again closes it. Without
 Screen Recording the cells show number and name only.
 
 A digit switches through the payload's instant op under the same lock as `sw`.
-If the payload is missing or older than v7, it falls back to
+If the payload is missing, older than v7, lacks the symbols, refuses the
+switch, or the request cannot be written, it falls back to
 `SpaceTool switch N`, but only for spaces on the first display, because `sw`
 resolves a bare number against the first display that has it. A switch the
 Dock accepted but CGS did not confirm within a second is not retried, since it
@@ -298,9 +299,11 @@ SpaceTool.app.
 runs in place. `make install-view` bundles it into `~/Applications` only, and
 `make install-view-agent` does that and loads its agent the same way
 `install-agent` does for SpaceBadge (neither touches the other).
-The bundle identifier and designated requirement match between the two, so
-grants made for one carry to the other. To get the Screen Recording and
-Accessibility prompts, launch `SpaceView.app --request-access` through `open`;
+With a `codesign.env` identity the bundle identifier and designated
+requirement match between the two, so grants made for one carry to the other
+(adhoc signing gets no such carry-over). To get the Screen Recording and
+Accessibility prompts, run
+`open -n build/SpaceView.app --args --request-access` (or the installed path);
 run directly from a terminal, TCC attributes the request to the terminal.
 
 ## Uninstall

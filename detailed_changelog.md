@@ -1,3 +1,25 @@
+[2026-10-02 21:10:00 UTC] [SpaceView/Feature: resident space switcher panel, phase 1 (epic spacetools-6bq.1, GH #1)]
+[Attempt #1]
+[Files Changed]
+- spaceview.m (new, 7 commits d44e2bb..2804ff8): single ObjC file like the rest of the repo. NSPanel (nonactivating, canJoinAllSpaces + fullScreenAuxiliary, level 101) built once and ordered in/out. Sidebar cells are filled from a preview cache keyed by space id: SLSHWCaptureSpace(cid, sid, 0), released once in a per-capture pool and downscaled to 960x540 immediately (the full image is ~48MB). Name from ~/.config/spacenames.json by space UUID, plus the ordinal. Digits 1-9 go through the Dock payload (HELLO v>=7, op 10, OP_SPACE_FOCUS_INSTANT) and hide the panel first; if the payload is unavailable the fallback runs `SpaceTool switch N` via NSTask, never the bridged switch. A CGEventTap is created disabled and enabled only while the panel is shown (modifiers, autorepeat and out-of-range digits pass through). Current space is captured async right after show; other spaces on NSWorkspaceActiveSpaceDidChange (the space just left), at launch, and on a 120s idle pass that recaptures the current space only.
+- 43d3896: a space created after launch is captured on the next open instead of staying blank.
+- 1d72c5a: captures are skipped without a Screen Recording grant (previewsOn), so the startup log matches behavior.
+- e760f93: a digit for the space you are already on closes Mission Control first (on switchQ, after the tap is disarmed).
+- 2804ff8: the SpaceTool fallback is taken only on the first display group; off it the switch is refused with a once-only log, because sw's matchSpace resolves ord N to the first group.
+- 09977aa: comment corrected, the panel does not dismiss Mission Control on macOS 27.
+- spacetool.m (ed3e08b): `view` mode posts dev.umanzor.spaceview.toggle; usage line updated.
+- Makefile: spaceview target (also in `all`), view-dev (bundle into build/, same identifier and designated requirement as the installed app so TCC grants carry over), install-view, install-view-agent (bootout/wait/bootstrap like install-agent, label only), uninstall-view; BUNDLE takes an optional destination folder; clean removes spaceview and build/. Existing targets unchanged. .gitignore: spaceview, build/.
+[Possible Ripple Effects]
+- SLSHWCaptureSpace leaves out canJoinAllSpaces windows (verified by the reviewer, one display, current space only, fullscreen untested), so windows pinned with `spacetool stick` and SpaceBadge badges are missing from previews. Phase 2 item. sharingType makes no difference, so the panel keeps its default.
+- The panel orders above Mission Control without dismissing it on macOS 27, so README line 154 does not hold for this panel (SpaceBadge's strip was not re-tested). The README correction is a separate commit.
+- Screen Recording (previews) and Accessibility (keys) are per bundle; a grant made after launch needs a restart. SpaceBadge, the payload and loadsa are untouched.
+- Open, ruled phase 3/4: multi-display (the fallback is refused off the first group, not wrong), fullscreen spaces, other spaces refresh only when left.
+[Testing Notes]
+- Reviewer approved d44e2bb..2804ff8 (p1-06-final.md): builds with -Wall -Wextra, 0 warnings; reproduced on 2804ff8: tap disabled while hidden, footprint 42MB, IOSurface 15 regions.
+- Coder live run (relayed, not reproduced by the reviewer): warm open 2.0-7.5ms to CA commit, first open 28-61ms, digit switch 129/34ms (64ms when it also closes MC), 10 toggles in 200ms coalesce to 5 opens and 2 captures, idle CPU ~0%, 50MB cold and 62MB warm. Bench: 30 passes, IOSurface regions flat, footprint 10.0 to 13.7MB. WindowServer footprint not measured (needs root).
+- Not run live: multi-display, fullscreen spaces, the multi-group fallback path.
+- Not installed to ~/Applications, agent not loaded, nothing pushed (operator-gated).
+
 [2026-10-02 01:00:09 UTC] [loadsa/Fix: WindowManager optional, no more garbage dlerror text]
 [Attempt #1]
 [Files Changed]

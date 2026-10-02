@@ -476,8 +476,8 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 }
 
 // no mission control check here: the window list read costs 2-10ms of a
-// one-frame budget, ordering front already dismisses MC, and a digit closes it
-// before switching anyway
+// one-frame budget. On macOS 27 the panel orders in above MC without
+// dismissing it, and a digit closes MC before switching
 - (void)toggle:(uint64_t)sentNs {
     uint64_t t0 = nowNs();
     if (self.panel.visible) { [self hide]; return; }

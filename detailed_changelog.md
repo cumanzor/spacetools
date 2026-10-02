@@ -1,3 +1,58 @@
+[2026-10-02 00:25:19 UTC] [spacetool+spacetoosa/Feature: instant space switching via the Dock payload]
+[Attempt #1]
+[Files Changed]
+- spacetoosa.m: SA_PROTO_VERSION 7, OP_SPACE_FOCUS_INSTANT = 10 (same wire
+  shape as create/destroy: u64 sid in, i32 SPACEC_* + u64 pad out). New
+  focusSpaceInstant: SLSCopyManagedDisplayForSpace guard first (the #2832
+  NULL-display crash), then on the Dock main queue resolve DisplaySpaces and
+  the ManagedSpace for the sid, SLSShowSpaces([dest]),
+  SLSHideSpaces([source]), SLSManagedDisplaySetCurrentSpace(display, dest),
+  and write _currentSpace with CFBridgingRetain (old value leaked, as in the
+  destroy fix). Three new dlsyms; HELLO mask bit 0x20 = all three resolved.
+- spacetool.m: saFocusSpace takes an instant flag (needs v7 + mask 0x20,
+  maps SPACEC_* errors; SPACEC_TIMEOUT still waits for CGS). cmdSwitch tries
+  instant, then the animated switchToUserSpace:, then the swipe, each
+  announced on stderr. SPACETOOL_ANIMATE=1 skips instant, SPACETOOL_SWIPE=1
+  skips both. sa-focus --instant <query> prints timings.
+- README.md switching section rewritten; CHEATSHEET.md SPACETOOL_ANIMATE.
+- BTT (not in repo): hyper+Q/E (36FA5794-.../895E5093-...) re-pointed to
+  /bin/sh -c "$HOME/Applications/SpaceTool.app/Contents/MacOS/SpaceTool"
+  switch prev|next. Earlier today this was reverted because both paths
+  slid identically; with the instant path the slide is gone.
+[Why this works now when the July bridged switch did not]
+- July did the same window-server calls from outside via the SkyLight
+  bridge; compositing was right but the Dock kept its own current space, so
+  MC highlighted the old one and ctrl-arrow counted from it. From inside the
+  Dock the payload updates _currentSpace itself, which is the missing half.
+[Testing Notes]
+- Live on 27.0 (26A428), payload v7 symbols 0x3f after killall Dock.
+- sa-focus --instant: reply 0.2-4.2ms, CGS reports the new space 45-180ms
+  later. sa-find after the jump: DisplaySpaces currentSpace = the target
+  spid, matches CGS.
+- Mixed with real ctrl-arrow (System Events key code 123/124 + control):
+  instant to 5 then ctrl-right -> 6; instant to 1, ctrl-left stays, ctrl-right
+  -> 2. Animated switches right after instant ones land.
+- Screenshots after instant jumps to 6 and 4: correct windows, menu bar
+  follows the space's app (Arc on 6), badge correct, no stale composite.
+- User eyes-on: typing goes to the new space's app, MC highlights the right
+  thumbnail afterwards, badge/strip/menu bar update cleanly, no jarring cut.
+- Retain fix exercised: create rt-test, instant onto it, rm while active,
+  ten mixed switches, Dock pid unchanged.
+- sw: instant 0.20-0.32s wall incl. process start; SPACETOOL_ANIMATE=1
+  0.44s; SPACETOOL_SWIPE=1 still works. 4 chained next/prev 0.67s.
+- MC+digit (scratch probe replaying SpaceBadge's Escape -> wait -> switch):
+  MC close ~0.5s, switch 0.2-0.7s under heavy load, no fallback on stderr.
+- BTT: execute_assigned_actions_for_trigger on both UUIDs steps 5->4->5.
+  osascript-synthesized hyper keypresses do not reach BTT hotkeys, so the
+  physical keys need one manual press.
+[Open]
+- One unreproduced refusal: animated switchToUserSpace: to index 5 right
+  after an instant jump to 5, in a churn loop just after removing the active
+  space. 15 retries of the same order all landed. sw would fall back to the
+  swipe if it recurs.
+- make install-sa still exits 1 on loadsa's WindowManager attempt, and
+  prints the target-side dlerror pointer as a local string.
+
 [2026-10-01 23:59:29 UTC] [spacetoosa/Fix: retain the _currentSpace written after remove_space]
 [Attempt #1]
 [Files Changed]

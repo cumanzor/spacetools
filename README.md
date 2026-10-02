@@ -11,7 +11,7 @@ spacename            # print current space name
 spacename list       # all spaces, current marked with *
 spacename set comms  # name the space you are on (empty name clears)
 sw comm              # switch to space by name prefix or number
-sw next              # one space right (prev = left), no wrap
+sw next              # one space right (prev = left), no wrap; BTT hyper+E / hyper+Q
 bring messages       # move an app's windows to this space and focus it
 send comms           # push the focused window to another space, stay put
 stick                # focused window appears on every space (not the whole app)
@@ -119,14 +119,21 @@ Window moves go through the private SkyLight bridge class
 (`CGSAddWindowsToSpaces` etc.) are dead for foreign windows on macOS 26; they
 only work on windows you own.
 
-Space switches do **not** go through the bridge. When the scripting addition
-is loaded (payload v4+), `sw` and SpaceBadge's MC+digit send the target space id
-to the payload, which resolves it to its index in the Dock's `allUserSpaces` and
-calls the Dock's own `-[Spaces switchToUserSpace:]` on the Dock main queue. The
-Dock performs the switch itself, so its model, Mission Control and ctrl-arrow
-stay in step; one slide of ~275-310ms whatever the distance. The Dock queues a
-request that arrives mid-animation (right after Mission Control closes, or
-behind another switch) instead of dropping it.
+Space switches do **not** go through the bridge. With payload v7, `sw` and
+SpaceBadge's MC+digit switch instantly, with no slide: inside the Dock the
+payload calls `SLSShowSpaces(dest)`, `SLSHideSpaces(source)` and
+`SLSManagedDisplaySetCurrentSpace`, then writes the display's
+`DockCore.DisplaySpaces._currentSpace` itself (yabai's `do_space_focus`). That
+last write is what the bridged switch from outside could never do, and why it
+desynced the Dock; from inside, Mission Control and ctrl-arrow stay in step.
+The payload replies in under 5ms; `sw` returns in ~170-200ms, mostly process
+startup and waiting for CGS to report the new space.
+
+If the instant path is unavailable (payload older than v7, symbols missing,
+or it refuses), `sw` falls back to the Dock's own animated
+`-[Spaces switchToUserSpace:]` (payload v4+): the Dock performs the switch, one
+slide of ~275-310ms whatever the distance, and queues a request that arrives
+mid-animation instead of dropping it. `SPACETOOL_ANIMATE=1` forces that path.
 
 Without the payload, `sw` falls back to synthesising the Dock's own swipe
 control event (a `CGEvent` with field 110 set to subtype 23, posted to

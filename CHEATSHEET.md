@@ -31,6 +31,7 @@ spacename list         # all spaces, * = current
 spacename set comms    # name current space ("" clears)
 sw comm                # switch by name prefix or number
 sw next / sw prev      # one space right / left, no wrap (left/right work too)
+SPACETOOL_ANIMATE=1 sw 3   # the old Dock slide instead of the instant cut
 bring spark            # move app windows here + focus (fuzzy app match)
 send comms             # push the focused window to another space, stay put
 stick                  # pin the focused window to all spaces

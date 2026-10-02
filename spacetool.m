@@ -262,7 +262,7 @@ static void moveWindowsToSpace(NSArray *wids, uint64_t sid) {
 // it can write window tag bit 11 (onAllWorkspaces)
 enum { OP_HELLO = 1, OP_STICKY_SET = 2, OP_STICKY_CLEAR = 3, OP_STICKY_QUERY = 4,
        OP_DUMP_CLASSES = 5, OP_FIND_SPACES = 6, OP_SPACE_FOCUS = 7,
-       OP_SPACE_CREATE = 8, OP_SPACE_DESTROY = 9 };
+       OP_SPACE_CREATE = 8, OP_SPACE_DESTROY = 9, OP_SPACE_FOCUS_INSTANT = 10 };
 enum { SPACEC_OK = 0, SPACEC_NO_SPACES = -1, SPACEC_BAD_SID = -2, SPACEC_NO_DISPLAY = -3,
        SPACEC_NO_CLASS = -4, SPACEC_TIMEOUT = -5, SPACEC_UNRESOLVED = -6, SPACEC_NOT_FOUND = -7 };
 
@@ -633,15 +633,16 @@ static int cmdSet(NSString *name) {
 // index and calls -[Spaces switchToUserSpace:], no gesture. Returns 0 once CGS
 // lands, 1 if the payload cannot take it (why says so), 2 if it took it but
 // CGS never got there
-static int saFocusSpace(NSDictionary *s, NSString **why, double *replyMs, double *landedMs, int64_t *indexOut) {
+static int saFocusSpace(NSDictionary *s, BOOL instant, NSString **why, double *replyMs, double *landedMs, int64_t *indexOut) {
     int32_t version = 0;
     uint32_t mask = 0;
     if (saHello(&version, &mask) < 0) { *why = @"scripting addition not loaded"; return 1; }
-    if (version < 4) { *why = [NSString stringWithFormat:@"payload is v%d, needs v4", version]; return 1; }
+    if (version < (instant ? 7 : 4)) { *why = [NSString stringWithFormat:@"payload is v%d, needs v%d", version, instant ? 7 : 4]; return 1; }
+    if (instant && !(mask & 32)) { *why = @"payload did not resolve SLSShowSpaces/HideSpaces/SetCurrentSpace"; return 1; }
     int fd = saConnect();
     if (fd < 0) { *why = @"scripting addition not loaded"; return 1; }
     uint64_t sid = [s[@"sid"] unsignedLongLongValue];
-    uint8_t msg[9] = { OP_SPACE_FOCUS }, rep[12];
+    uint8_t msg[9] = { instant ? OP_SPACE_FOCUS_INSTANT : OP_SPACE_FOCUS }, rep[12];
     memcpy(msg + 1, &sid, 8);
     uint64_t t0 = clock_gettime_nsec_np(CLOCK_MONOTONIC);
     BOOL io = saWriteN(fd, msg, sizeof msg) && saReadN(fd, rep, sizeof rep);
@@ -651,8 +652,12 @@ static int saFocusSpace(NSDictionary *s, NSString **why, double *replyMs, double
     memcpy(&err, rep, 4);
     memcpy(indexOut, rep + 4, 8);
     *replyMs = (clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0) / 1e6;
-    if (err == -1) { *why = @"payload found no Spaces instance"; return 1; }
-    if (err == -2) { *why = @"space is not a user space in the Dock"; return 1; }
+    if (instant && err && err != SPACEC_TIMEOUT) {
+        *why = [NSString stringWithFormat:@"instant switch refused (payload error %d)", err];
+        return 1;
+    }
+    if (!instant && err == -1) { *why = @"payload found no Spaces instance"; return 1; }
+    if (!instant && err == -2) { *why = @"space is not a user space in the Dock"; return 1; }
     // a main-queue timeout may still run late, so wait for CGS either way
     for (int i = 0; i < 100; i++) {
         if ([currentSpaceOnDisplay(s[@"display"])[@"sid"] isEqual:s[@"sid"]]) {
@@ -661,7 +666,7 @@ static int saFocusSpace(NSDictionary *s, NSString **why, double *replyMs, double
         }
         usleep(10000);
     }
-    *why = err == -3 ? @"Dock main queue timed out" : err ? @"Dock refused the switch"
+    *why = (instant ? err == SPACEC_TIMEOUT : err == -3) ? @"Dock main queue timed out" : err ? @"Dock refused the switch"
                      : @"Dock accepted the switch but CGS never got there";
     return 2;
 }
@@ -711,21 +716,22 @@ static int saMutateSpace(uint8_t op, uint64_t sid, NSString **why) {
     return 1;
 }
 
-// payload first; the swipe is the fallback. The swipe is relative, so a second
-// switch reading the current space before the first lands would add its delta
-// to a stale base: the lock serializes them
+// instant payload switch first, then the Dock's animated one, then the swipe.
+// The swipe is relative, so a second switch reading the current space before
+// the first lands would add its delta to a stale base: the lock serializes them
 static int cmdSwitch(NSString *query) {
     lockSwitch();
     NSDictionary *s = matchSpace(query);
     if (!s) { fprintf(stderr, "sw: no space matching \"%s\"\n", query.UTF8String); return 1; }
     if ([s[@"current"] boolValue]) { printf("already on %s\n", label(s).UTF8String); return 0; }
-    if (!getenv("SPACETOOL_SWIPE")) {
+    for (int instant = getenv("SPACETOOL_ANIMATE") ? 0 : 1; instant >= 0 && !getenv("SPACETOOL_SWIPE"); instant--) {
         NSString *why = nil;
         double replyMs = 0, landedMs = 0;
         int64_t index = -1;
-        int r = saFocusSpace(s, &why, &replyMs, &landedMs, &index);
+        int r = saFocusSpace(s, instant, &why, &replyMs, &landedMs, &index);
         if (r == 0) { printf("switched to %s\n", label(s).UTF8String); return 0; }
-        fprintf(stderr, "sw: %s, falling back to the swipe\n", why.UTF8String);
+        fprintf(stderr, "sw: %s, falling back to the %s\n", why.UTF8String,
+                instant ? "animated switch" : "swipe");
         s = matchSpace(query);
         if (!s) { fprintf(stderr, "sw: no space matching \"%s\"\n", query.UTF8String); return 1; }
         if ([s[@"current"] boolValue]) { printf("already on %s\n", label(s).UTF8String); return 0; }
@@ -741,6 +747,8 @@ static int cmdSwitch(NSString *query) {
 
 // the payload path alone, with timings; no swipe fallback
 static int cmdSAFocus(NSString *query) {
+    BOOL instant = [query hasPrefix:@"--instant"];
+    if (instant) query = [[query substringFromIndex:9] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
     lockSwitch();
     NSDictionary *s = matchSpace(query);
     if (!s) { fprintf(stderr, "sa-focus: no space matching \"%s\"\n", query.UTF8String); return 1; }
@@ -748,10 +756,10 @@ static int cmdSAFocus(NSString *query) {
     NSString *why = nil;
     double replyMs = 0, landedMs = 0;
     int64_t index = -1;
-    int r = saFocusSpace(s, &why, &replyMs, &landedMs, &index);
+    int r = saFocusSpace(s, instant, &why, &replyMs, &landedMs, &index);
     if (r) { fprintf(stderr, "sa-focus: %s (index %lld)\n", why.UTF8String, (long long)index); return 1; }
-    printf("switched to %s (index %lld, reply %.1fms, landed %.1fms)\n", label(s).UTF8String,
-           (long long)index, replyMs, landedMs);
+    printf("switched to %s (%s, index %lld, reply %.1fms, landed %.1fms)\n", label(s).UTF8String,
+           instant ? "instant" : "animated", (long long)index, replyMs, landedMs);
     return 0;
 }
 

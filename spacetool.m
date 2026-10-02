@@ -1057,6 +1057,12 @@ int main(int argc, char **argv) {
     for (int i = 2; i < argc; i++) [rest addObject:[NSString stringWithUTF8String:argv[i]]];
     NSString *arg = [rest componentsJoinedByString:@" "];
 
+    if ([mode isEqualToString:@"view"]) {
+        // SpaceView stamps open latency against this, so same clock on both sides
+        [[NSDistributedNotificationCenter defaultCenter] postNotificationName:@"dev.umanzor.spaceview.toggle"
+            object:nil userInfo:@{ @"t": @(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)) } deliverImmediately:YES];
+        return 0;
+    }
     if ([mode isEqualToString:@"current"]) return cmdCurrent();
     if ([mode isEqualToString:@"list"])    return cmdList();
     if ([mode isEqualToString:@"set"])     return cmdSet(arg);
@@ -1088,7 +1094,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: spacetool current|list|set <name>|switch <query|next|prev>"
                     "|bring <app>|send <space>|stick [app]|unstick [app]"
                     "|stick list|create [name]|rm <space>"
-                    "|layout save|restore\n");
+                    "|layout save|restore|view\n");
     return 2;
   }
 }

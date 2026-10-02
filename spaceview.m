@@ -193,6 +193,136 @@ static NSArray<NSDictionary *> *windowsOnSpace(uint64_t sid, NSDictionary *info,
     return out;
 }
 
+// --- window layout ---
+// pure: frames and a pane in, image rects out (y grows down, the caller flips).
+// Every item is the image plus a label strip under it; items stay inside the
+// pane and never overlap. Mission Control style when the windows can be pushed
+// apart legibly, else a grid in z order
+static const int kGridAbove = 12;            // more windows than this always grid
+static const CGFloat kLayoutGap = 12, kLayoutMargin = 16, kLayoutLabelH = 18;
+static const CGFloat kMinCellW = 72;         // narrower than this is not legible: grid
+
+static CGSize sanitizedSize(CGRect f) {
+    CGFloat w = isfinite(f.size.width) ? fabs(f.size.width) : 0, h = isfinite(f.size.height) ? fabs(f.size.height) : 0;
+    return CGSizeMake(MAX(w, 1), MAX(h, 1));
+}
+
+static CGRect fitAspect(CGSize s, CGRect cell) {
+    if (cell.size.width <= 0 || cell.size.height <= 0) return CGRectMake(cell.origin.x, cell.origin.y, 0, 0);
+    CGFloat k = fmin(cell.size.width / s.width, cell.size.height / s.height);
+    CGFloat w = s.width * k, h = s.height * k;
+    return CGRectMake(cell.origin.x + (cell.size.width - w) / 2, cell.origin.y + (cell.size.height - h) / 2, w, h);
+}
+
+static void gridLayout(const CGSize *sz, int n, CGRect pane, CGRect *out) {
+    CGFloat bestScore = -1;
+    int bestCols = 1;
+    for (int cols = 1; cols <= n; cols++) {
+        int rows = (n + cols - 1) / cols;
+        CGFloat cw = (pane.size.width - (cols + 1) * kLayoutGap) / cols;
+        CGFloat ch = (pane.size.height - (rows + 1) * kLayoutGap) / rows - kLayoutLabelH;
+        if (cw <= 0 || ch <= 0) continue;
+        CGFloat score = 0;
+        for (int i = 0; i < n; i++) { CGRect r = fitAspect(sz[i], CGRectMake(0, 0, cw, ch)); score += r.size.width * r.size.height; }
+        if (score > bestScore) { bestScore = score; bestCols = cols; }
+    }
+    int cols = bestCols, rows = (n + cols - 1) / cols;
+    CGFloat cw = MAX(0, (pane.size.width - (cols + 1) * kLayoutGap) / cols);
+    CGFloat ch = MAX(0, (pane.size.height - (rows + 1) * kLayoutGap) / rows - kLayoutLabelH);
+    for (int i = 0; i < n; i++) {
+        int r = i / cols, c = i % cols;
+        CGRect cell = CGRectMake(pane.origin.x + kLayoutGap + c * (cw + kLayoutGap),
+                                 pane.origin.y + kLayoutGap + r * (ch + kLayoutLabelH + kLayoutGap), cw, ch);
+        out[i] = fitAspect(sz[i], cell);
+    }
+}
+
+static BOOL itemsOverlap(CGRect a, CGRect b, CGFloat gap) {
+    if (a.size.width <= 0 || a.size.height <= 0 || b.size.width <= 0 || b.size.height <= 0) return NO;
+    return a.origin.x < CGRectGetMaxX(b) + gap && b.origin.x < CGRectGetMaxX(a) + gap &&
+           a.origin.y < CGRectGetMaxY(b) + gap && b.origin.y < CGRectGetMaxY(a) + gap;
+}
+
+// returns YES when it fell back to the grid
+static BOOL layoutWindows(const CGRect *frames, int n, CGRect pane, CGRect *out) {
+    if (n <= 0) return NO;
+    if (!isfinite(pane.origin.x) || !isfinite(pane.origin.y) || !isfinite(pane.size.width) || !isfinite(pane.size.height)
+            || pane.size.width <= 0 || pane.size.height <= 0) {
+        for (int i = 0; i < n; i++) out[i] = CGRectZero;
+        return YES;
+    }
+    CGSize *sz = calloc(n, sizeof *sz);
+    CGFloat *cx = calloc(n, sizeof *cx), *cy = calloc(n, sizeof *cy);
+    for (int i = 0; i < n; i++) sz[i] = sanitizedSize(frames[i]);
+    CGRect inner = CGRectInset(pane, kLayoutMargin, kLayoutMargin);
+    BOOL grid = n > kGridAbove || inner.size.width <= 0 || inner.size.height <= kLayoutLabelH;
+    if (!grid) {
+        // natural positions: the union of the real frames mapped into the pane
+        CGFloat minX = INFINITY, minY = INFINITY, maxX = -INFINITY, maxY = -INFINITY;
+        for (int i = 0; i < n; i++) {
+            CGFloat x = isfinite(frames[i].origin.x) ? frames[i].origin.x : 0, y = isfinite(frames[i].origin.y) ? frames[i].origin.y : 0;
+            minX = fmin(minX, x); minY = fmin(minY, y); maxX = fmax(maxX, x + sz[i].width); maxY = fmax(maxY, y + sz[i].height);
+        }
+        CGFloat k = fmin(inner.size.width / (maxX - minX), (inner.size.height - kLayoutLabelH) / (maxY - minY));
+        for (int i = 0; i < n; i++) {
+            CGFloat x = isfinite(frames[i].origin.x) ? frames[i].origin.x : 0, y = isfinite(frames[i].origin.y) ? frames[i].origin.y : 0;
+            cx[i] = inner.origin.x + (x - minX + sz[i].width / 2) * k;
+            cy[i] = inner.origin.y + (y - minY + sz[i].height / 2) * k;
+        }
+        BOOL settled = NO;
+        for (int round = 0; round < 8 && !settled; round++) {
+            for (int it = 0; it < 64; it++) {
+                BOOL moved = NO;
+                for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) {
+                    CGFloat wi = sz[i].width * k, hi = sz[i].height * k + kLayoutLabelH;
+                    CGFloat wj = sz[j].width * k, hj = sz[j].height * k + kLayoutLabelH;
+                    CGFloat ox = (wi + wj) / 2 + kLayoutGap - fabs(cx[i] - cx[j]);
+                    CGFloat oy = (hi + hj) / 2 + kLayoutGap - fabs(cy[i] - cy[j]);
+                    if (ox <= 0 || oy <= 0) continue;
+                    moved = YES;
+                    // ties break by index so identical frames still separate
+                    if (ox < oy) { CGFloat d = (cx[i] < cx[j] || (cx[i] == cx[j] && i < j)) ? -1 : 1; cx[i] += d * ox / 2; cx[j] -= d * ox / 2; }
+                    else         { CGFloat d = (cy[i] < cy[j] || (cy[i] == cy[j] && i < j)) ? -1 : 1; cy[i] += d * oy / 2; cy[j] -= d * oy / 2; }
+                }
+                if (!moved) break;
+            }
+            CGFloat bx0 = INFINITY, by0 = INFINITY, bx1 = -INFINITY, by1 = -INFINITY;
+            for (int i = 0; i < n; i++) {
+                CGFloat w = sz[i].width * k, h = sz[i].height * k + kLayoutLabelH;
+                bx0 = fmin(bx0, cx[i] - w / 2); bx1 = fmax(bx1, cx[i] + w / 2);
+                by0 = fmin(by0, cy[i] - h / 2); by1 = fmax(by1, cy[i] + h / 2);
+            }
+            CGFloat bw = bx1 - bx0, bh = by1 - by0;
+            if (bw <= inner.size.width + 0.5 && bh <= inner.size.height + 0.5) {
+                CGFloat dx = inner.origin.x + (inner.size.width - bw) / 2 - bx0, dy = inner.origin.y + (inner.size.height - bh) / 2 - by0;
+                for (int i = 0; i < n; i++) { cx[i] += dx; cy[i] += dy; }
+                settled = YES;
+                break;
+            }
+            // too big: shrink about the bounding box centre (the label strip does not scale), then push again
+            CGFloat s = 0.97 * fmin(inner.size.width / bw, inner.size.height / bh);
+            CGFloat mx = (bx0 + bx1) / 2, my = (by0 + by1) / 2;
+            for (int i = 0; i < n; i++) { cx[i] = mx + (cx[i] - mx) * s; cy[i] = my + (cy[i] - my) * s; }
+            k *= s;
+        }
+        if (settled) {
+            for (int i = 0; i < n; i++) {
+                CGFloat w = sz[i].width * k, h = sz[i].height * k;
+                out[i] = CGRectMake(cx[i] - w / 2, cy[i] - (h + kLayoutLabelH) / 2, w, h);
+            }
+            for (int i = 0; i < n && !grid; i++) for (int j = i + 1; j < n && !grid; j++) {
+                CGRect a = out[i], b = out[j];
+                a.size.height += kLayoutLabelH; b.size.height += kLayoutLabelH;
+                if (itemsOverlap(a, b, 0)) grid = YES;
+            }
+            for (int i = 0; i < n && !grid; i++) if (out[i].size.width < kMinCellW && n > 1) grid = YES;
+        } else grid = YES;
+    }
+    if (grid) gridLayout(sz, n, pane, out);
+    free(sz); free(cx); free(cy);
+    return grid;
+}
+
 // --- scripting addition client (protocol in spacetool.m) ---
 enum { OP_HELLO = 1, OP_SPACE_FOCUS_INSTANT = 10 };
 enum { SPACEC_TIMEOUT = -5 };
@@ -909,6 +1039,83 @@ static int cmdBench(int passes) {
     return 0;
 }
 
+// drives layoutWindows with random and degenerate input and checks what the
+// pane relies on: finite, inside the pane, no overlaps, aspect kept, deterministic
+static CGFloat fuzzVal(void) {
+    double r = drand48();
+    if (r < 0.03) return NAN;
+    if (r < 0.05) return INFINITY;
+    if (r < 0.08) return 0;
+    if (r < 0.11) return -(drand48() * 2000);
+    if (r < 0.13) return 1e9;
+    return drand48();   // caller scales
+}
+static int cmdFuzzLayout(long iters, long seed) {
+    srand48(seed);
+    long fails = 0, grids = 0, checked = 0;
+    for (long it = 0; it < iters; it++) {
+        int n = (int)(drand48() * 30);
+        CGRect pane = CGRectMake(drand48() * 400, drand48() * 400, drand48() < 0.05 ? fuzzVal() : drand48() * 2000,
+                                 drand48() < 0.05 ? fuzzVal() : drand48() * 1500);
+        CGRect *f = calloc(n ? n : 1, sizeof *f), *a = calloc(n ? n : 1, sizeof *a), *b = calloc(n ? n : 1, sizeof *b);
+        for (int i = 0; i < n; i++) {
+            BOOL odd = drand48() < 0.15;
+            f[i] = CGRectMake(odd ? fuzzVal() * 6000 : drand48() * 6000 - 3000, odd ? fuzzVal() * 4000 : drand48() * 4000 - 1000,
+                              odd ? fuzzVal() * 3000 : 120 + drand48() * 3000, odd ? fuzzVal() * 2000 : 120 + drand48() * 2000);
+            // a third of runs stack windows on the same frame, the push-apart worst case
+            if (i && drand48() < 0.33) f[i] = f[i - 1];
+        }
+        BOOL g = layoutWindows(f, n, pane, a);
+        layoutWindows(f, n, pane, b);
+        grids += g;
+        NSMutableArray *why = [NSMutableArray array];
+        if (n && memcmp(a, b, n * sizeof *a)) [why addObject:@"nondeterministic"];
+        BOOL paneOK = isfinite(pane.size.width) && isfinite(pane.size.height) && isfinite(pane.origin.x) && isfinite(pane.origin.y);
+        for (int i = 0; i < n; i++) {
+            CGRect r = a[i];
+            if (!isfinite(r.origin.x) || !isfinite(r.origin.y) || !isfinite(r.size.width) || !isfinite(r.size.height)) {
+                [why addObject:[NSString stringWithFormat:@"%d not finite", i]]; continue; }
+            if (r.size.width <= 0 || r.size.height <= 0) continue;
+            checked++;
+            CGRect item = CGRectMake(r.origin.x, r.origin.y, r.size.width, r.size.height + kLayoutLabelH);
+            if (paneOK && !CGRectContainsRect(CGRectInset(pane, -0.5, -0.5), item))
+                [why addObject:[NSString stringWithFormat:@"%d outside pane", i]];
+            CGSize s0 = sanitizedSize(f[i]);
+            double want = s0.width / s0.height, got = r.size.width / r.size.height;
+            if (fabs(got - want) / want > 1e-6) [why addObject:[NSString stringWithFormat:@"%d aspect %.4f vs %.4f", i, got, want]];
+            for (int j = i + 1; j < n; j++) {
+                CGRect o = a[j];
+                if (o.size.width <= 0 || o.size.height <= 0) continue;
+                CGRect oi = CGRectMake(o.origin.x, o.origin.y, o.size.width, o.size.height + kLayoutLabelH);
+                if (CGRectIntersectsRect(CGRectInset(item, 0.25, 0.25), CGRectInset(oi, 0.25, 0.25)))
+                    [why addObject:[NSString stringWithFormat:@"%d overlaps %d", i, j]];
+            }
+        }
+        if (why.count) {
+            if (fails < 5) printf("FAIL iter %ld n=%d pane=%.0fx%.0f grid=%d: %s\n", it, n, pane.size.width, pane.size.height, g,
+                                  [[why subarrayWithRange:NSMakeRange(0, MIN(4, why.count))] componentsJoinedByString:@"; "].UTF8String);
+            fails++;
+        }
+        free(f); free(a); free(b);
+    }
+    printf("fuzz-layout seed %ld: %ld layouts, %ld grid, %ld cells checked, %ld failing\n", seed, iters, grids, checked, fails);
+    // realistic desks (1-8 windows on a 2304x1296 display, a 1300x900 pane): how
+    // often the Mission Control style layout survives instead of the grid
+    long real = 0, realGrid = 0;
+    for (int it = 0; it < 2000; it++) {
+        int n = 1 + (int)(drand48() * 8);
+        CGRect f[8], o[8];
+        for (int i = 0; i < n; i++) {
+            CGFloat w = 400 + drand48() * 1600, h = 300 + drand48() * 900;
+            f[i] = CGRectMake(drand48() * (2304 - w), 25 + drand48() * (1271 - h), w, h);
+        }
+        real++;
+        realGrid += layoutWindows(f, n, CGRectMake(0, 0, 1300, 900), o);
+    }
+    printf("realistic: %ld layouts, %ld grid (%.0f%%)\n", real, realGrid, 100.0 * realGrid / real);
+    return fails ? 1 : 0;
+}
+
 // window lists and captures for every user space, synchronously. Checks the
 // SkyLight order against the onscreen (front to back) order on current spaces
 static int cmdBenchWindows(int passes) {
@@ -1029,13 +1236,15 @@ int main(int argc, char **argv) {
     NSString *mode = argc > 1 ? [NSString stringWithUTF8String:argv[1]] : @"";
     if ([mode isEqualToString:@"--bench"]) return cmdBench(argc > 2 ? MAX(1, atoi(argv[2])) : 1);
     if ([mode isEqualToString:@"--probe-sharing"]) return cmdProbeSharing();
+    if ([mode isEqualToString:@"--fuzz-layout"])
+        return cmdFuzzLayout(argc > 2 ? MAX(1, atol(argv[2])) : 10000, argc > 3 ? atol(argv[3]) : 1);
     if ([mode isEqualToString:@"--bench-windows"]) return cmdBenchWindows(argc > 2 ? MAX(1, atoi(argv[2])) : 1);
     if ([mode isEqualToString:@"--request-access"]) {
         BOOL ok = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess();
         AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{ (__bridge id)kAXTrustedCheckOptionPrompt: @YES });
         return ok ? 0 : 1;
     }
-    if (mode.length) { fprintf(stderr, "usage: spaceview [--bench [passes]|--bench-windows [passes]|--probe-sharing|--request-access]\n"); return 2; }
+    if (mode.length) { fprintf(stderr, "usage: spaceview [--bench [passes]|--bench-windows [passes]|--fuzz-layout [iters] [seed]|--probe-sharing|--request-access]\n"); return 2; }
 
     BOOL screenOK = CGPreflightScreenCaptureAccess(), axOK = AXIsProcessTrusted();
     LOG("pid %d, screen recording %d, accessibility %d, capture symbol %d",

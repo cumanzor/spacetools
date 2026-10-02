@@ -1,3 +1,28 @@
+[2026-10-02 01:00:09 UTC] [loadsa/Fix: WindowManager optional, no more garbage dlerror text]
+[Attempt #1]
+[Files Changed]
+- loadsa.m Target gains `optional`; WindowManager is optional. main counts
+  only required targets toward the exit code and prints "<name> is optional,
+  not counted as a failure" otherwise.
+- loadsa.m reportResult: the dlerror pointer was always read from the
+  target correctly, but it points into the stub3 pthread's dlerror buffer,
+  which is freed when that thread exits, before loadsa reads it; the bytes
+  are whatever the target reused it for. Non-printable text is replaced with
+  "(dlerror text already freed in the target)", and errno now prints with
+  strerror. Copying the message out inside the stub would need a shellcode
+  change; errno already carries the diagnosis (EPERM).
+[Possible Ripple Effects]
+- SpaceBadge's reinjectSA treated loadsa's nonzero exit as "stale sudoers
+  hash?" and logged it after every Dock restart because WM never loads.
+  That false alarm is gone; a real pin mismatch still fails (sudo -n exits 1).
+- SpaceBadge still runs loadsa on WindowManager restarts and loadsa still
+  attempts WM each run (one short-lived thread in WM, harmless).
+[Testing Notes]
+- make install-sa: Dock "already active", WM "dlopen failed (errno 1,
+  Operation not permitted): (dlerror text already freed in the target)",
+  "WindowManager is optional, not counted", make completes.
+- sudo -n loadsa: exit 0.
+
 [2026-10-02 00:25:19 UTC] [spacetool+spacetoosa/Feature: instant space switching via the Dock payload]
 [Attempt #1]
 [Files Changed]

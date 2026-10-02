@@ -143,11 +143,13 @@ static const uint64_t result_sentinel[5] = {
     0x0B1E5ED05E5E7775ULL, 0x0B1E5ED05E5E7775ULL, 0x0B1E5ED05E5E7775ULL,
     0x0B1E5ED05E5E7775ULL, 0x0B1E5ED05E5E7775ULL };
 
-// WindowManager is a launchd agent and never reports isFinishedLaunching
-typedef struct { const char *name, *bundle, *socket; BOOL needsLaunched; } Target;
+// WindowManager is a launchd agent and never reports isFinishedLaunching. It
+// is optional: the kernel EPERMs every out-of-cache dlopen there, so its
+// failure is reported but never fails the run (or SpaceBadge's re-inject)
+typedef struct { const char *name, *bundle, *socket; BOOL needsLaunched, optional; } Target;
 static const Target targets[] = {
-    { "Dock", "com.apple.dock", "spacetool-sa", YES },
-    { "WindowManager", "com.apple.WindowManager", "spacetool-sa-wm", NO },
+    { "Dock", "com.apple.dock", "spacetool-sa", YES, NO },
+    { "WindowManager", "com.apple.WindowManager", "spacetool-sa-wm", NO, YES },
 };
 
 static pid_t targetPid(const Target *t) {
@@ -248,9 +250,13 @@ static int reportResult(const Target *t, mach_port_t task, uint64_t stack,
                     (mach_vm_address_t)err, &n) != KERN_SUCCESS || !n)
                 strcpy(err, "(dlerror message unreadable)");
             else err[n < sizeof err - 1 ? n : sizeof err - 1] = 0;
+            // the text lives in the exited stub thread's dlerror buffer, which
+            // the target may have reused by the time we read it
+            for (char *c = err; *c; c++)
+                if (*c < 0x20 || *c > 0x7e) { strcpy(err, "(dlerror text already freed in the target)"); break; }
         }
-        fprintf(stderr, "loadsa: %s: dlopen failed (errno %llu): %s\n", name,
-                (unsigned long long)err_no,
+        fprintf(stderr, "loadsa: %s: dlopen failed (errno %llu, %s): %s\n", name,
+                (unsigned long long)err_no, strerror((int)err_no),
                 err[0] ? err : "(empty dlerror message; pthread TSD may be"
                                " unavailable on mach-converted threads)");
         return 1;
@@ -416,6 +422,11 @@ int main(int argc, char **argv) {
         }
     }
     int failed = 0;
-    for (size_t i = 0; i < sizeof targets / sizeof targets[0]; i++) failed |= inject(&targets[i]);
+    for (size_t i = 0; i < sizeof targets / sizeof targets[0]; i++) {
+        int r = inject(&targets[i]);
+        if (r && targets[i].optional)
+            fprintf(stderr, "loadsa: %s is optional, not counted as a failure\n", targets[i].name);
+        else failed |= r;
+    }
     return failed;
 }

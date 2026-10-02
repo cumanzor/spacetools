@@ -606,10 +606,12 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 
 // safe while the panel is up: SLSHWCaptureSpace leaves out all-spaces windows
 // (measured with --probe-sharing), which also means stuck windows are missing
-- (void)captureSid:(uint64_t)sid {
+- (void)captureSid:(uint64_t)sid { [self captureSid:sid urgent:NO]; }
+
+- (void)captureSid:(uint64_t)sid urgent:(BOOL)urgent {
     if (!previewsOn) return;
     [self enqueue:@{ @"kind": @"preview", @"sid": @(sid),
-                     @"key": [NSString stringWithFormat:@"p%llu", sid] } urgent:NO];
+                     @"key": [NSString stringWithFormat:@"p%llu", sid] } urgent:urgent];
 }
 
 // the list first, then one job per window, all at the same priority
@@ -766,7 +768,8 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     [CATransaction commit];
     if (keyTap) CGEventTapEnable(keyTap, true);
     // cached shot goes up first; the fresh one replaces it ~100ms later
-    if (g) [self captureSid:[g[@"current"] unsignedLongLongValue]];
+    // urgent: the fresh shot of the space you are on must not wait behind a leave batch
+    if (g) [self captureSid:[g[@"current"] unsignedLongLongValue] urgent:YES];
     // a space created since launch has never been left, so nothing captured it
     for (NSDictionary *s in self.shown)
         if (!self.previews[s[@"sid"]]) [self captureSid:[s[@"sid"] unsignedLongLongValue]];

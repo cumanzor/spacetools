@@ -36,8 +36,12 @@ static const size_t kWindowCacheCap = 40u << 20;
 // stuck windows show up on every space's list; one filter so it stays a one-line change
 static const BOOL kExcludeStuckWindows = YES;
 static const NSWindowLevel kPanelLevel = NSPopUpMenuWindowLevel;
-// how dark the screen behind the panel goes; tuned by eye
+// how dark the screen behind the panel goes, and the black wash over the
+// panel's own blur; both tuned by eye
 static const CGFloat kBackdropAlpha = 0.35;
+static const CGFloat kPanelTintAlpha = 0.25;
+// the panel inset from each edge of the screen's visibleFrame (~88% of it)
+static const CGFloat kPanelInset = 0.06;
 static const NSWindowCollectionBehavior kPanelBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
     NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorStationary |
     NSWindowCollectionBehaviorIgnoresCycle;
@@ -666,6 +670,7 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
 
     NSVisualEffectView *bg = [[NSVisualEffectView alloc] initWithFrame:p.contentView.bounds];
     bg.material = NSVisualEffectMaterialHUDWindow;
+    bg.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     bg.state = NSVisualEffectStateActive;
     bg.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     bg.wantsLayer = YES;
@@ -674,6 +679,12 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
     bg.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     p.contentView = bg;
     _blur = bg;
+    // darker than the HUD material alone; under the sidebar and pane
+    NSView *tint = [[NSView alloc] initWithFrame:bg.bounds];
+    tint.wantsLayer = YES;
+    tint.layer.backgroundColor = [NSColor colorWithWhite:0 alpha:kPanelTintAlpha].CGColor;
+    tint.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [bg addSubview:tint];
 
     NSScrollView *sv = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     sv.hasVerticalScroller = YES;
@@ -717,7 +728,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 
 - (void)layoutForScreen:(NSScreen *)screen {
     NSRect sf = screen.visibleFrame;
-    NSRect r = NSInsetRect(sf, sf.size.width * 0.15, sf.size.height * 0.12);
+    NSRect r = NSInsetRect(sf, sf.size.width * kPanelInset, sf.size.height * kPanelInset);
     r = NSIntegralRect(r);
     // after a display change NSWindow.frame keeps the pre-change rect, so a
     // setFrame: to that same rect is a no-op; force the move through an offset

@@ -839,7 +839,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 - (void)storePreview:(CGImageRef)img sid:(uint64_t)sid {
     if (!img) return;
     self.previews[@(sid)] = (__bridge id)img;
-    if (self.panel.visible) [self refreshCellContents];
+    if (atomic_load(&panelVisible)) [self refreshCellContents];
 }
 
 // --- capture worker ---
@@ -940,7 +940,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     for (NSNumber *wid in ws.images.allKeys)
         if (![live containsObject:wid]) [self dropImage:wid from:ws];
     LOG("space %llu: %lu windows (%d stuck skipped)", sid, (unsigned long)list.count, stuck);
-    if (self.panel.visible && sid == [self selectedSid]) [self renderPane];
+    if (atomic_load(&panelVisible) && sid == [self selectedSid]) [self renderPane];
     // urgent jobs go to the front one by one, so add them in reverse to keep z order
     NSEnumerator *e = urgent ? list.reverseObjectEnumerator : list.objectEnumerator;
     for (NSDictionary *w in e)
@@ -966,7 +966,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     ws.bytes += b;
     self.winBytes += b;
     LOG("window %u on %llu in %.1fms, cache %.1fMB", wid, sid, ms, self.winBytes / 1048576.0);
-    if (self.panel.visible && sid == [self selectedSid]) [self renderPane];
+    if (atomic_load(&panelVisible) && sid == [self selectedSid]) [self renderPane];
 }
 
 // the in-flight capture counts against the cap: reserve its worst case before
@@ -1030,7 +1030,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 // dismissing it, and a digit closes MC before switching
 - (void)toggle:(uint64_t)sentNs {
     uint64_t t0 = nowNs();
-    if (self.panel.visible) { [self hide]; return; }
+    if (atomic_load(&panelVisible)) { [self hide]; return; }
     [self show:sentNs received:t0];
 }
 
@@ -1051,13 +1051,13 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 - (void)prewarm {
     [self prepareForScreen:screenUnderMouse()];
     [self.panel.contentView layoutSubtreeIfNeeded];
+    // ordered in for good, hidden by alpha: a display change stripped the
+    // all-spaces membership from ordered-out panels while the SpaceBadge strip,
+    // kept ordered in at alpha 0, came through intact
     self.panel.alphaValue = 0;
+    self.panel.ignoresMouseEvents = YES;
     [self.panel orderFrontRegardless];
     [self.panel displayIfNeeded];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        if (!atomic_load(&panelVisible)) [self.panel orderOut:nil];
-        self.panel.alphaValue = 1;
-    });
 }
 
 - (NSArray *)panelSpaces {
@@ -1079,8 +1079,11 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 
 - (void)ensureOnSpace:(uint64_t)sid {
     NSArray *on = [self panelSpaces];
-    if (!sid || !on.count || [on containsObject:@(sid)]) return;   // never ordered in yet, or fine
-    [self reassertSpaces:@"open, current space missing"];
+    NSUInteger spaces = 0;
+    for (NSDictionary *g in displaySpaces()) spaces += [g[@"spaces"] count];
+    // never ordered in yet, or fine
+    if (!sid || !on.count || ([on containsObject:@(sid)] && (on.count > 1 || spaces < 2))) return;
+    [self reassertSpaces:[on containsObject:@(sid)] ? @"open, on one space only" : @"open, current space missing"];
     if ([[self panelSpaces] containsObject:@(sid)] || !addToSpacesF) return;
     // our own window, so the legacy call still works on it
     addToSpacesF(cid, (__bridge CFArrayRef)@[@(self.panel.windowNumber)], (__bridge CFArrayRef)@[@(sid)]);
@@ -1105,6 +1108,8 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     atomic_store(&panelVisible, true);
     __block uint64_t tOrder = 0;
     if (g) [self ensureOnSpace:[g[@"current"] unsignedLongLongValue]];
+    self.panel.ignoresMouseEvents = NO;
+    self.panel.alphaValue = 1;
     [CATransaction begin];
     [CATransaction setCompletionBlock:^{
         LOG("open: ipc %.1fms, prep %.1fms, order %.1fms, committed %.1fms", sentNs ? (t0 - sentNs) / 1e6 : -1.0,
@@ -1126,7 +1131,8 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     if (atomic_load(&panelVisible)) LOG("hide");
     if (keyTap) CGEventTapEnable(keyTap, false);
     atomic_store(&panelVisible, false);
-    [self.panel orderOut:nil];
+    self.panel.alphaValue = 0;
+    self.panel.ignoresMouseEvents = YES;
 }
 
 - (void)switchToOrd:(int)ord {
@@ -1177,6 +1183,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 }
 
 - (void)hoverIndexOf:(CellView *)v {
+    if (!atomic_load(&panelVisible)) return;   // the panel stays ordered in while hidden
     if (!self.hoverArmed) {
         NSPoint p = [NSEvent mouseLocation];
         if (fabs(p.x - self.showMouse.x) < 1 && fabs(p.y - self.showMouse.y) < 1) return;
@@ -1580,7 +1587,7 @@ int main(int argc, char **argv) {
             [viewer performSelector:@selector(reassertSpaces:) withObject:@"display change" afterDelay:1.5];
         }];
     NSTimer *idle = [NSTimer scheduledTimerWithTimeInterval:120 repeats:YES block:^(NSTimer *t) {
-        if (!viewer.panel.visible) [viewer captureCurrent];
+        if (!atomic_load(&panelVisible)) [viewer captureCurrent];
     }];
     idle.tolerance = 30;
     [NSApp run];

@@ -25,7 +25,7 @@
 - Hidden panel costs: dev SpaceView 0.09% CPU, WindowServer near 48% in both builds (high on this machine, not investigated).
 [Testing Notes]
 - Status is mitigated, not proven fixed. Reviewer approved on code. Cause is unproven: stick-pinned app windows are ordered in and still collapse, so ordered-in alone may not explain it, and the clear and re-set may be what matters. The reassert before/after log from a real display change decides which.
-- Pending: a real display change with the dev build running (F7c).
+- F7c, 2026-10-03 13:19 local: an operator monitor change ran with the dev build. Inconclusive. The dev build logged reassert [6,8,514,584,77] -> same, twice, and the panel opened, but the installed phase 1 agent (ordered out) also kept all 5 spaces, so this change did not reproduce the bug. The fix is not disproven and is harmless; whether it prevents the bug is unproven. The overnight trigger was probably a different event (sleep/wake, a long disconnect or several changes). Verified by the orchestrator.
 
 [2026-10-02 21:33:56 UTC] [SpaceView/Feature: click a sidebar cell to switch (66c26e6), README 599ae0b eb3ecdc c87b59f cbfaad1]
 [Attempt #1]

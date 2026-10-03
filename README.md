@@ -167,7 +167,7 @@ space's windows are captured when you leave it, when you select it with
 nothing cached, and, for the space you are on, every time the panel opens.
 All captures go through one worker, one at a time. What a selection or an open
 asks for jumps ahead of queued leave captures, so it never waits behind a
-whole batch of them (a window takes 15-30ms, more on a first hit).
+whole batch of them (a window typically takes 15-30ms, up to about 80ms).
 
 The layout (`layoutWindows`) is a pure function: it maps the windows' real
 frames into the pane, pushes overlapping ones apart, and falls back to a grid
@@ -180,7 +180,7 @@ switches there through the same path as a digit. Once CGS confirms the switch,
 it finds that exact window through Accessibility by window id (never by title,
 since terminals and browsers repeat titles), raises it and makes its app
 frontmost. If the app does not come forward that way, it activates just that
-app. A window on the space you are on gets focused without a switch. Each
+app (the switch from one app to another is not checked live yet). A window on the space you are on gets focused without a switch. Each
 Accessibility call times out after 0.5s, and an app that does not answer the
 window lookup is skipped after one timeout. If the window closed after it was
 captured, you still land on its space.

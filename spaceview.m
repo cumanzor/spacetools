@@ -776,7 +776,8 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 }
 
 - (uint64_t)selectedSid {
-    return self.selected < (NSInteger)self.shown.count ? [self.shown[self.selected][@"sid"] unsignedLongLongValue] : 0;
+    return self.selected >= 0 && self.selected < (NSInteger)self.shown.count
+        ? [self.shown[self.selected][@"sid"] unsignedLongLongValue] : 0;
 }
 
 // cached images or placeholders, laid out by layoutWindows; never captures

@@ -253,10 +253,13 @@ Gotchas learned the hard way:
   in a display change: afterwards `CGSCopySpacesForWindows` lists only one old
   space, so ordering it in shows it somewhere you are not, while the window
   still reads as all-spaces. SpaceBadge's strip, ordered in at alpha 0, came
-  through the same change intact. SpaceView now keeps its panel ordered in and
-  hides it with alpha 0 and `ignoresMouseEvents`, and re-checks the membership
-  on every open. That this holds through a real display change is not
-  verified yet.
+  through the same change intact, but stuck app windows are ordered in too and
+  do collapse (see `stick` above), so being ordered in may not be what saved
+  it. SpaceView covers both: it keeps its panel ordered in, hidden with alpha 0
+  and `ignoresMouseEvents`, and on every open and after a display change it
+  clears and re-sets the all-spaces bit when the current space is missing,
+  logging the membership before and after. Which of the two carries it through
+  a real display change is not verified yet.
 - Do not switch spaces with `SLSBridgedManagedDisplaySetCurrentSpaceOperation`.
   It moves the window server and nothing else. The Dock keeps its own
   current-space index and no op in the bridge tells it otherwise (all 100

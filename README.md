@@ -117,7 +117,9 @@ repeatedly and `visibleFrame` keeps moving for a beat after the last one).
 `dev.umanzor.spaceview`. A resident stand-in for Mission Control's space
 picker: `spacetool view` toggles a panel listing the spaces of the display
 under the mouse, each with a preview, its number and its name. `1`-`9` or a
-click on a space switch to it with no slide, Esc closes it. The right half is empty for now.
+click on a space switch to it with no slide, Esc closes it. The right half
+shows the windows of the selected space, laid out like Mission Control, and a
+click on one of them takes you to it.
 
 Mission Control is slow to show previews because the Dock renders them on
 demand. SpaceView keeps them warm instead. `SLSHWCaptureSpace` captures any
@@ -144,6 +146,45 @@ Accessibility there is no tap, so the panel opens but ignores keys; a click
 still switches, and `spacetool view` again closes it. Without Screen Recording
 the cells show number and name only.
 
+Selection is separate from switching. It starts on the space you are on, even
+when the pointer happens to rest on another cell (opening the panel sends a
+mouse-entered event without any motion, so hover only counts after the pointer
+really moves). Hover or the up and down arrows move it, stopping at the ends,
+and Enter switches to it; digits and clicks on the sidebar still switch at
+once. Arrows and Enter follow the digit rules: swallowed only while the panel
+is up and only without modifiers.
+
+The right pane lists the selected space's windows with
+`SLSCopyWindowsWithOptionsAndTags`, keeping layer-0 windows at least 120x120,
+and captures each with `SLSHWCaptureWindowList` downscaled to fit 640x400.
+That size is fixed rather than the drawn size, so a relayout never needs a
+recapture. Windows that are on every space (more than one entry from
+`CGSCopySpacesForWindows`) are left out, the same as in the previews. Window
+images are kept under a 40MB nominal cap; past it, whole spaces are dropped,
+least recently selected first, never the selected or the current one, and a
+capture that still does not fit is skipped and drawn as a placeholder. A
+space's windows are captured when you leave it, when you select it with
+nothing cached, and, for the space you are on, every time the panel opens.
+All captures go through one worker, one at a time. What a selection or an open
+asks for jumps ahead of queued leave captures, so it never waits behind a
+whole batch of them (a window takes 15-30ms, more on a first hit).
+
+The layout (`layoutWindows`) is a pure function: it maps the windows' real
+frames into the pane, pushes overlapping ones apart, and falls back to a grid
+in the order SkyLight lists the windows above 12 windows, or when the result would overlap or
+leave a window too small to read. `spaceview --fuzz-layout [iterations] [seed]`
+checks it against random and degenerate input.
+
+Clicking a window hides the panel, works out the window's current space, and
+switches there through the same path as a digit. Once CGS confirms the switch,
+it finds that exact window through Accessibility by window id (never by title,
+since terminals and browsers repeat titles), raises it and makes its app
+frontmost. If the app does not come forward that way, it activates just that
+app. A window on the space you are on gets focused without a switch. Each
+Accessibility call times out after 0.5s, and an app that does not answer the
+window lookup is skipped after one timeout. If the window closed after it was
+captured, you still land on its space.
+
 A digit switches through the payload's instant op under the same lock as `sw`.
 If the payload is missing, older than v7, lacks the symbols, refuses the
 switch, or the request cannot be written, it falls back to
@@ -157,7 +198,8 @@ MC first, then switches; one for the space you are on just closes MC.
 
 Each open logs its latency (`/usr/bin/log show --predicate
 'process == "SpaceView"'`; zsh has its own `log` builtin). `spaceview --bench
-[passes]` prints capture timings, footprint and the IOSurface region count. A
+[passes]` prints capture timings, footprint and the IOSurface region count;
+`--bench-windows [passes]` does the same for every space's windows. A
 leaked capture only shows up in that count, because captures are
 IOSurface-backed and not charged to the footprint.
 
@@ -309,6 +351,9 @@ requirement match between the two, so grants made for one carry to the other
 Accessibility prompts, run
 `open -n build/SpaceView.app --args --request-access` (or the installed path);
 run directly from a terminal, TCC attributes the request to the terminal.
+A dev build can run next to the installed one: launched with
+`open -n --env SPACEVIEW_TOGGLE=<name> build/SpaceView.app`, it listens for
+that distributed notification instead of the one `spacetool view` posts.
 
 ## Uninstall
 

@@ -1,3 +1,31 @@
+[2026-10-03 19:06:00 UTC] [SpaceView/Feature: phase 2, window pane with Mission Control style layout and click to focus (epic spacetools-6bq.2, GH #2)]
+[Attempt #1]
+[Files Changed]
+- spaceview.m (d3b7b00, 897bec8, e9e9e63, b1334be, 5613165, d07d64a, f304288, ac47e88, e03fc1e, 2ce4f5c, d54af91, d1defa7, 3b3bfdc): window lists via SkyLight (layer 0, at least 120x120, SkyLight order) and one CGWindowListCopyWindowInfo per list; window images from SLSHWCaptureWindowList at 640x400, released once per capture, on one worker queue where an urgent job jumps queued leave captures. Cache is 40MB nominal, LRU by last-selected space, never evicts the selected space, the current one or the capture target; a capture that does not fit is skipped and drawn as a placeholder. Triggers: leaving a space, selecting an uncached one, and every open for the current space. layoutWindows is pure: real frames scaled into the pane, overlaps pushed apart, grid above 12 windows, on residual overlap, too small a pane or non-finite input; `--fuzz-layout` checks its invariants. Selection starts on the current space; arrows and hover browse without switching (hover is ignored until the pointer moves 1pt), Enter switches through the digit path. Click a window: hide, re-resolve its space at click time, switch (confirmed by CGS), find the window by wid through AX, raise it, set the app frontmost, activate only that app if still not frontmost. AX calls that time out (0.5s) skip focus. Diagnostics `--bench-windows`; SPACEVIEW_TOGGLE renames the toggle notification for dev builds (unset falls back to dev.umanzor.spaceview.toggle).
+- Fixes found in review: eviction wasted captures and emptied itself at the cap (897bec8); a hung app could block the switch queue for ~7.5s (e03fc1e, now ~0.5s); layout output went NaN for origins above 1e17 (grid fallback in d07d64a); selectedSid could index shown[-1] (3b3bfdc); the pane said "capturing windows..." forever without Screen Recording (ac47e88); opening on the current space showed a stale window list (2ce4f5c).
+- README.md: window pane, selection, click to focus, dev builds, capture timing (15-30ms typical, up to ~80ms).
+[Possible Ripple Effects]
+- Stuck (all-spaces) windows are excluded from every pane, like the sidebar previews.
+- The SpaceTool fallback now waits up to 2s for CGS before focusing, so a fallback switch can hold the switch queue that long.
+- Every open recaptures the current space's windows in the background (12-80ms each); not idle cost.
+- Uncached space: placeholders at once, first image ~45ms after the list, six in ~230ms. Accepted against the ~100ms target, phase 3 may prefetch.
+[Testing Notes]
+- Reviewer approved each commit on code (builds clean with -Wall -Wextra; fuzz with the reviewer's seeds, mutants fail the targeted assertions; eviction harness at a 3MB cap). Reproduced by the reviewer: focus by window id with a duplicate-title iTerm window on another space (frontmost and AXFocusedWindow equal the clicked wid), open prep 0.6-1.5ms, committed 4.1-8.3ms warm, 38-43ms first after launch.
+- Relayed from the coder: IOSurface regions flat over repeated selection passes, footprint 53MB with 3 spaces cached and 68MB with every space cached (budget 60-120MB), idle 0.0%.
+- Not exercised live: a click focusing another app's window while a different app is frontmost (operator hand test pending, the README marks it "not checked live yet"), and a hung app.
+
+[2026-10-03 19:06:00 UTC] [SpaceView/Fix: panel lost all-spaces membership after a display change (ed090e4, 74f7d64, 7e85de9, docs 1b942c8, a47d849, 63c82fe)]
+[Attempt #1]
+[Files Changed]
+- spaceview.m: the panel stays ordered in at alpha 0 while hidden instead of orderOut (74f7d64), so visibility checks read an explicit panelVisible. On open and after screen-parameter changes it re-asserts membership by clearing and re-setting canJoinAllSpaces, logs the before and after space counts, and adds the window to the spaces itself if CopySpaces shows one space only (ed090e4). Hidden, it ignores mouse events, drops stray mouse ups and stops the backdrop blur (7e85de9).
+- README.md: gotcha that an all-spaces window can lose its membership in a display change. It does not claim which mechanism carried the fix.
+[Possible Ripple Effects]
+- The installed agent was restarted by kickstart with the operator's OK but still runs phase 1 code, so it can hit the same bug on the next display change until the fix is installed.
+- Hidden panel costs: dev SpaceView 0.09% CPU, WindowServer near 48% in both builds (high on this machine, not investigated).
+[Testing Notes]
+- Status is mitigated, not proven fixed. Reviewer approved on code. Cause is unproven: stick-pinned app windows are ordered in and still collapse, so ordered-in alone may not explain it, and the clear and re-set may be what matters. The reassert before/after log from a real display change decides which.
+- Pending: a real display change with the dev build running (F7c) and a cross-app hand test.
+
 [2026-10-02 21:33:56 UTC] [SpaceView/Feature: click a sidebar cell to switch (66c26e6), README 599ae0b eb3ecdc c87b59f cbfaad1]
 [Attempt #1]
 [Files Changed]

@@ -808,7 +808,8 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
         [v.layer addSublayer:v.image];
         v.hover = [CALayer layer];
         v.hover.cornerRadius = 5;
-        v.hover.actions = @{ @"backgroundColor": [NSNull null] };   // snap, like the sidebar
+        v.hover.actions = @{ @"backgroundColor": [NSNull null], @"borderWidth": [NSNull null],
+                             @"borderColor": [NSNull null] };   // snap, like the sidebar
         [v.layer addSublayer:v.hover];
         v.label = [NSTextField labelWithString:@""];
         v.label.font = [NSFont systemFontOfSize:11];
@@ -835,6 +836,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
         v.image.frame = CGRectMake(0, kLayoutLabelH, r.size.width, r.size.height);
         v.hover.frame = v.image.frame;
         v.hover.backgroundColor = nil;   // no hover or press survives a rerender or reopen
+        v.hover.borderWidth = 0;
         v.image.contents = ws.images[w[@"wid"]];   // nil draws the placeholder fill
         NSString *t = [w[@"title"] length] ? [NSString stringWithFormat:@"%@ - %@", w[@"app"], w[@"title"]] : w[@"app"];
         v.label.stringValue = t;
@@ -1140,7 +1142,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 
 - (void)hide {
     if (atomic_load(&panelVisible)) LOG("hide");
-    for (WinCellView *v in self.winCells) v.hover.backgroundColor = nil;
+    for (WinCellView *v in self.winCells) { v.hover.backgroundColor = nil; v.hover.borderWidth = 0; }
     if (keyTap) CGEventTapEnable(keyTap, false);
     atomic_store(&panelVisible, false);
     self.panel.alphaValue = 0;
@@ -1230,12 +1232,17 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
         options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
         owner:self userInfo:nil]];
 }
-- (void)tint:(CGFloat)a { self.hover.backgroundColor = a > 0 ? [NSColor colorWithWhite:1 alpha:a].CGColor : nil; }
-- (void)mouseEntered:(NSEvent *)e { if ([viewer hoverLive]) [self tint:0.12]; }
+// stronger than the sidebar's tint: a white wash alone is easy to miss over a busy window shot
+- (void)tint:(CGFloat)a {
+    self.hover.backgroundColor = a > 0 ? [NSColor colorWithWhite:1 alpha:a].CGColor : nil;
+    self.hover.borderColor = NSColor.controlAccentColor.CGColor;
+    self.hover.borderWidth = a > 0 ? 2 : 0;
+}
+- (void)mouseEntered:(NSEvent *)e { if ([viewer hoverLive]) [self tint:0.22]; }
 // a resting pointer at open only lights the cell once it moves
-- (void)mouseMoved:(NSEvent *)e { if (!self.hover.backgroundColor && [viewer hoverLive]) [self tint:0.12]; }
+- (void)mouseMoved:(NSEvent *)e { if (!self.hover.backgroundColor && [viewer hoverLive]) [self tint:0.22]; }
 - (void)mouseExited:(NSEvent *)e { [self tint:0]; }
-- (void)mouseDown:(NSEvent *)e { if (atomic_load(&panelVisible)) [self tint:0.22]; }
+- (void)mouseDown:(NSEvent *)e { if (atomic_load(&panelVisible)) [self tint:0.32]; }
 // on the up, inside, like the sidebar cells
 - (void)mouseUp:(NSEvent *)e {
     [self tint:0];

@@ -565,6 +565,7 @@ static void focusWindow(pid_t pid, uint32_t wid, uint64_t sid) {
 @property uint32_t wid;
 @property pid_t pid;
 @property uint64_t sid;   // the space it was listed under; the click re-resolves it
+- (void)tint:(CGFloat)a;  // only Viewer -applyHighlight calls this
 @end
 
 // the screen behind the panel: dims it, and a click on it closes the panel.
@@ -615,6 +616,9 @@ static void focusWindow(pid_t pid, uint32_t wid, uint64_t sid) {
 @property NSInteger selected;                      // index into shown
 @property NSPoint showMouse;                       // pointer at order-in
 @property BOOL hoverArmed;                         // the pointer has really moved since then
+@property uint32_t highlightedWid;                 // the one highlighted pane window: mouse and keys both set it
+@property uint32_t pressedWid;                     // mouse held down on it
+@property NSArray<NSNumber *> *readingOrder;       // pane wids, top-left first, for left/right
 @end
 
 static Viewer *viewer;
@@ -805,6 +809,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     i = MAX(0, MIN((NSInteger)self.shown.count - 1, i));   // clamp, no wrap
     BOOL changed = i != self.selected;
     self.selected = i;
+    if (changed) self.highlightedWid = 0;
     uint64_t sid = [self.shown[i][@"sid"] unsignedLongLongValue];
     WinSpace *ws = self.winCache[@(sid)];
     if (ws) ws.lastSelected = nowNs();
@@ -873,16 +878,69 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
         // the view is unflipped: the image sits above the label strip
         v.image.frame = CGRectMake(0, kLayoutLabelH, r.size.width, r.size.height);
         v.hover.frame = v.image.frame;
-        v.hover.backgroundColor = nil;   // no hover or press survives a rerender or reopen
-        v.hover.borderWidth = 0;
         v.image.contents = ws.images[w[@"wid"]];   // nil draws the placeholder fill
         NSString *t = [w[@"title"] length] ? [NSString stringWithFormat:@"%@ - %@", w[@"app"], w[@"title"]] : w[@"app"];
         v.label.stringValue = t;
         // explicit frame: autoresizing never refits a same-width string swap
         v.label.frame = NSMakeRect(0, 1, r.size.width, kLayoutLabelH - 2);
     }
+    // reading order of the laid-out cells: rows top to bottom (cells whose tops
+    // are within half the smallest height share a row), then left to right
+    CGFloat minH = INFINITY;
+    for (int i = 0; i < n; i++) minH = fmin(minH, out[i].size.height);
+    NSMutableArray *idx = [NSMutableArray array];
+    for (int i = 0; i < n; i++) [idx addObject:@(i)];
+    CGFloat tol = n ? minH / 2 : 0;
+    [idx sortUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
+        CGRect x = out[a.intValue], y = out[b.intValue];
+        if (fabs(x.origin.y - y.origin.y) > tol) return x.origin.y < y.origin.y ? NSOrderedAscending : NSOrderedDescending;
+        if (x.origin.x != y.origin.x) return x.origin.x < y.origin.x ? NSOrderedAscending : NSOrderedDescending;
+        return a.intValue < b.intValue ? NSOrderedAscending : NSOrderedDescending;
+    }];
+    NSMutableArray *order = [NSMutableArray array];
+    for (NSNumber *k in idx) [order addObject:list[k.intValue][@"wid"]];
+    self.readingOrder = order;
+    // a highlighted or pressed window that left the list must not linger
+    if (![order containsObject:@(self.highlightedWid)]) self.highlightedWid = 0;
+    if (![order containsObject:@(self.pressedWid)]) self.pressedWid = 0;
+    [self applyHighlight];
     [CATransaction commit];
     free(frames); free(out);
+}
+
+// the only place pane cells get tinted
+- (void)applyHighlight {
+    for (WinCellView *v in self.winCells) {
+        CGFloat a = v.hidden ? 0 : v.wid == self.pressedWid ? 0.32 : v.wid == self.highlightedWid ? 0.22 : 0;
+        [v tint:a];
+    }
+}
+
+- (void)highlightWid:(uint32_t)wid {
+    if (self.highlightedWid == wid) return;
+    self.highlightedWid = wid;
+    [self applyHighlight];
+}
+
+// left/right through the pane in reading order; from nothing, right starts at
+// the first window and left at the last; stops at the ends
+- (void)moveHighlight:(NSInteger)d {
+    NSArray *o = self.readingOrder;
+    if (!o.count) return;
+    NSUInteger at = [o indexOfObject:@(self.highlightedWid)];
+    NSInteger next = at == NSNotFound ? (d > 0 ? 0 : (NSInteger)o.count - 1) : MAX(0, MIN((NSInteger)o.count - 1, (NSInteger)at + d));
+    [self highlightWid:[o[next] unsignedIntValue]];
+}
+
+// one fired check for both outcomes: a highlighted window is focused, else
+// the selected space is switched to; never both
+- (void)enter {
+    if (fired) return;
+    if (self.highlightedWid && [self.readingOrder containsObject:@(self.highlightedWid)])
+        for (WinCellView *v in self.winCells)
+            if (!v.hidden && v.wid == self.highlightedWid) { [self focusWindowCell:v]; return; }
+    fired = YES;
+    [self switchToSelected];
 }
 
 - (void)storePreview:(CGImageRef)img sid:(uint64_t)sid {
@@ -1196,7 +1254,9 @@ static NSArray *spacesOfWindow(NSWindow *w) {
 
 - (void)hide {
     if (atomic_load(&panelVisible)) LOG("hide");
-    for (WinCellView *v in self.winCells) { v.hover.backgroundColor = nil; v.hover.borderWidth = 0; }
+    self.highlightedWid = 0;
+    self.pressedWid = 0;
+    [self applyHighlight];
     if (keyTap) CGEventTapEnable(keyTap, false);
     atomic_store(&panelVisible, false);
     self.panel.alphaValue = 0;
@@ -1294,14 +1354,20 @@ static NSArray *spacesOfWindow(NSWindow *w) {
     self.hover.borderColor = NSColor.controlAccentColor.CGColor;
     self.hover.borderWidth = a > 0 ? 2 : 0;
 }
-- (void)mouseEntered:(NSEvent *)e { if ([viewer hoverLive]) [self tint:0.22]; }
+// pointer input writes the shared highlight (last input wins over the keys)
+- (void)mouseEntered:(NSEvent *)e { if ([viewer hoverLive]) [viewer highlightWid:self.wid]; }
 // a resting pointer at open only lights the cell once it moves
-- (void)mouseMoved:(NSEvent *)e { if (!self.hover.backgroundColor && [viewer hoverLive]) [self tint:0.22]; }
-- (void)mouseExited:(NSEvent *)e { [self tint:0]; }
-- (void)mouseDown:(NSEvent *)e { if (atomic_load(&panelVisible)) [self tint:0.32]; }
+- (void)mouseMoved:(NSEvent *)e { if (viewer.highlightedWid != self.wid && [viewer hoverLive]) [viewer highlightWid:self.wid]; }
+- (void)mouseExited:(NSEvent *)e { if (viewer.highlightedWid == self.wid) [viewer highlightWid:0]; }
+- (void)mouseDown:(NSEvent *)e {
+    if (!atomic_load(&panelVisible)) return;
+    viewer.pressedWid = self.wid;
+    [viewer applyHighlight];
+}
 // on the up, inside, like the sidebar cells
 - (void)mouseUp:(NSEvent *)e {
-    [self tint:0];
+    viewer.pressedWid = 0;
+    [viewer applyHighlight];
     if (!atomic_load(&panelVisible)) return;
     if (!NSPointInRect([self convertPoint:e.locationInWindow fromView:nil], self.bounds)) return;
     [viewer focusWindowCell:self];
@@ -1369,10 +1435,14 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
         dispatch_async(dispatch_get_main_queue(), ^{ [viewer moveSelection:step]; });
         return NULL;
     }
-    if (kc == 36 || kc == 76) {     // return, keypad enter
+    if (kc == 123 || kc == 124) {   // left, right: the window highlight in the pane
+        NSInteger step = kc == 124 ? 1 : -1;
+        dispatch_async(dispatch_get_main_queue(), ^{ [viewer moveHighlight:step]; });
+        return NULL;
+    }
+    if (kc == 36 || kc == 76) {     // return, keypad enter; fired is checked and set on main
         if (fired || repeat) return NULL;
-        fired = YES;
-        dispatch_async(dispatch_get_main_queue(), ^{ [viewer switchToSelected]; });
+        dispatch_async(dispatch_get_main_queue(), ^{ [viewer enter]; });
         return NULL;
     }
     int d = digitForKeycode(kc);

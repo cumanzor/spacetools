@@ -35,6 +35,9 @@ static const CGFloat kWindowImgW = 640, kWindowImgH = 400;
 static const size_t kWindowCacheCap = 40u << 20;
 // stuck windows show up on every space's list; one filter so it stays a one-line change
 static const BOOL kExcludeStuckWindows = YES;
+static const NSWindowLevel kPanelLevel = NSPopUpMenuWindowLevel;
+// how dark the screen behind the panel goes; tuned by eye
+static const CGFloat kBackdropAlpha = 0.35;
 static const NSWindowCollectionBehavior kPanelBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
     NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorStationary |
     NSWindowCollectionBehaviorIgnoresCycle;
@@ -560,6 +563,12 @@ static void focusWindow(pid_t pid, uint32_t wid, uint64_t sid) {
 @property uint64_t sid;   // the space it was listed under; the click re-resolves it
 @end
 
+// the screen behind the panel: dims it, and a click on it closes the panel.
+// The click is swallowed, like Mission Control's
+@interface DimmerView : NSView
+@property BOOL armed;   // the press started here, not on the panel
+@end
+
 @interface Cell : NSObject
 @property CellView *view;
 @property CALayer *preview;
@@ -594,7 +603,8 @@ static void focusWindow(pid_t pid, uint32_t wid, uint64_t sid) {
 @property NSMutableDictionary<NSNumber *, WinSpace *> *winCache;   // sid -> windows
 @property size_t winBytes;
 @property BOOL screensMoved;
-@property NSVisualEffectView *backdrop;          // blur off while hidden: the panel stays ordered in
+@property NSPanel *dimmer;                        // backdrop window, one level below the panel
+@property NSVisualEffectView *blur;              // off while hidden: the panel stays ordered in
 @property FlippedView *pane;                       // right side: the selected space's windows
 @property NSMutableArray<WinCellView *> *winCells; // reused across renders
 @property NSTextField *paneNote;                   // "no windows" / "capturing"
@@ -646,7 +656,7 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
     NSPanel *p = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 1200, 700)
         styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
         backing:NSBackingStoreBuffered defer:NO];
-    p.level = NSPopUpMenuWindowLevel;
+    p.level = kPanelLevel;
     p.collectionBehavior = kPanelBehavior;
     p.opaque = NO;
     p.backgroundColor = NSColor.clearColor;
@@ -663,7 +673,7 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
     bg.layer.masksToBounds = YES;
     bg.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     p.contentView = bg;
-    _backdrop = bg;
+    _blur = bg;
 
     NSScrollView *sv = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     sv.hasVerticalScroller = YES;
@@ -682,6 +692,20 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
     [_pane addSubview:_paneNote];
     _panel = p;
     panelWid = (CGWindowID)p.windowNumber;
+
+    // same lifecycle as the panel (F7e): built once, ordered in for good, hidden by alpha
+    NSPanel *d = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 100, 100)
+        styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        backing:NSBackingStoreBuffered defer:NO];
+    d.level = kPanelLevel - 1;   // never above the panel, whatever the ordering
+    d.collectionBehavior = kPanelBehavior;
+    d.opaque = NO;
+    d.backgroundColor = NSColor.blackColor;
+    d.hasShadow = NO;
+    d.hidesOnDeactivate = NO;
+    d.releasedWhenClosed = NO;
+    d.contentView = [[DimmerView alloc] initWithFrame:NSMakeRect(0, 0, 100, 100)];
+    _dimmer = d;
 }
 
 static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
@@ -699,9 +723,12 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     // setFrame: to that same rect is a no-op; force the move through an offset
     if (self.screensMoved) {
         [self.panel setFrame:NSOffsetRect(r, 1, 1) display:NO];
+        [self.dimmer setFrame:NSOffsetRect(screen.frame, 1, 1) display:NO];
         self.screensMoved = NO;
     }
     [self.panel setFrame:r display:NO];
+    // the full frame, menu bar and Dock included, like Mission Control
+    [self.dimmer setFrame:screen.frame display:NO];
     self.sidebar.frame = NSMakeRect(0, 0, kSidebarW, r.size.height);
     self.pane.frame = NSMakeRect(kSidebarW, 0, r.size.width - kSidebarW, r.size.height);
     self.paneNote.frame = NSMakeRect(0, r.size.height / 2 - 12, r.size.width - kSidebarW, 24);
@@ -1067,39 +1094,52 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     // kept ordered in at alpha 0, came through intact
     self.panel.alphaValue = 0;
     self.panel.ignoresMouseEvents = YES;
-    self.backdrop.state = NSVisualEffectStateInactive;
+    self.blur.state = NSVisualEffectStateInactive;
     [self.panel orderFrontRegardless];
     [self.panel displayIfNeeded];
+    self.dimmer.alphaValue = 0;
+    self.dimmer.ignoresMouseEvents = YES;
+    [self.dimmer orderWindow:NSWindowBelow relativeTo:self.panel.windowNumber];
 }
 
-- (NSArray *)panelSpaces {
+static NSArray *spacesOfWindow(NSWindow *w) {
     if (!copySpacesF) return nil;
-    return CFBridgingRelease(copySpacesF(cid, 7, (__bridge CFArrayRef)@[@(self.panel.windowNumber)]));
+    return CFBridgingRelease(copySpacesF(cid, 7, (__bridge CFArrayRef)@[@(w.windowNumber)]));
 }
 
 // a display change rebuilds the space set and can leave the panel on one old
 // space while it still reads as all-spaces (the README stick display-change
 // note); it then "opens" somewhere you are not. Toggle the bit so the server
 // rebuilds the membership, and add it to the space by hand if that was not enough
+- (void)reassert:(NSWindow *)w name:(const char *)name why:(NSString *)why {
+    NSArray *before = spacesOfWindow(w);
+    w.collectionBehavior = kPanelBehavior & ~NSWindowCollectionBehaviorCanJoinAllSpaces;
+    w.collectionBehavior = kPanelBehavior;
+    LOG("reassert spaces of %{public}s (%{public}@): [%{public}@] -> [%{public}@]", name, why,
+        [before componentsJoinedByString:@","], [spacesOfWindow(w) componentsJoinedByString:@","]);
+}
+
 - (void)reassertSpaces:(NSString *)why {
-    NSArray *before = [self panelSpaces];
-    self.panel.collectionBehavior = kPanelBehavior & ~NSWindowCollectionBehaviorCanJoinAllSpaces;
-    self.panel.collectionBehavior = kPanelBehavior;
-    LOG("reassert spaces (%{public}@): [%{public}@] -> [%{public}@]", why,
-        [before componentsJoinedByString:@","], [[self panelSpaces] componentsJoinedByString:@","]);
+    [self reassert:self.panel name:"panel" why:why];
+    [self reassert:self.dimmer name:"backdrop" why:why];
+}
+
+- (void)ensure:(NSWindow *)w name:(const char *)name onSpace:(uint64_t)sid spaces:(NSUInteger)spaces {
+    NSArray *on = spacesOfWindow(w);
+    // never ordered in yet, or fine
+    if (!sid || !on.count || ([on containsObject:@(sid)] && (on.count > 1 || spaces < 2))) return;
+    [self reassert:w name:name why:[on containsObject:@(sid)] ? @"open, on one space only" : @"open, current space missing"];
+    if ([spacesOfWindow(w) containsObject:@(sid)] || !addToSpacesF) return;
+    // our own window, so the legacy call still works on it
+    addToSpacesF(cid, (__bridge CFArrayRef)@[@(w.windowNumber)], (__bridge CFArrayRef)@[@(sid)]);
+    LOG("added %{public}s to space %llu by hand: [%{public}@]", name, sid, [spacesOfWindow(w) componentsJoinedByString:@","]);
 }
 
 - (void)ensureOnSpace:(uint64_t)sid {
-    NSArray *on = [self panelSpaces];
     NSUInteger spaces = 0;
     for (NSDictionary *g in displaySpaces()) spaces += [g[@"spaces"] count];
-    // never ordered in yet, or fine
-    if (!sid || !on.count || ([on containsObject:@(sid)] && (on.count > 1 || spaces < 2))) return;
-    [self reassertSpaces:[on containsObject:@(sid)] ? @"open, on one space only" : @"open, current space missing"];
-    if ([[self panelSpaces] containsObject:@(sid)] || !addToSpacesF) return;
-    // our own window, so the legacy call still works on it
-    addToSpacesF(cid, (__bridge CFArrayRef)@[@(self.panel.windowNumber)], (__bridge CFArrayRef)@[@(sid)]);
-    LOG("added panel to space %llu by hand: [%{public}@]", sid, [[self panelSpaces] componentsJoinedByString:@","]);
+    [self ensure:self.panel name:"panel" onSpace:sid spaces:spaces];
+    [self ensure:self.dimmer name:"backdrop" onSpace:sid spaces:spaces];
 }
 
 - (void)show:(uint64_t)sentNs received:(uint64_t)t0 {
@@ -1120,7 +1160,10 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     atomic_store(&panelVisible, true);
     __block uint64_t tOrder = 0;
     if (g) [self ensureOnSpace:[g[@"current"] unsignedLongLongValue]];
-    self.backdrop.state = NSVisualEffectStateActive;
+    self.blur.state = NSVisualEffectStateActive;
+    [self.dimmer orderWindow:NSWindowBelow relativeTo:self.panel.windowNumber];
+    self.dimmer.ignoresMouseEvents = NO;
+    self.dimmer.alphaValue = kBackdropAlpha;
     self.panel.ignoresMouseEvents = NO;
     self.panel.alphaValue = 1;
     [CATransaction begin];
@@ -1147,7 +1190,9 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     atomic_store(&panelVisible, false);
     self.panel.alphaValue = 0;
     self.panel.ignoresMouseEvents = YES;
-    self.backdrop.state = NSVisualEffectStateInactive;
+    self.blur.state = NSVisualEffectStateInactive;
+    self.dimmer.alphaValue = 0;
+    self.dimmer.ignoresMouseEvents = YES;
 }
 
 - (void)switchToOrd:(int)ord {
@@ -1249,6 +1294,19 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     if (!atomic_load(&panelVisible)) return;
     if (!NSPointInRect([self convertPoint:e.locationInWindow fromView:nil], self.bounds)) return;
     [viewer focusWindowCell:self];
+}
+@end
+
+@implementation DimmerView
+- (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
+- (void)mouseDown:(NSEvent *)e { self.armed = atomic_load(&panelVisible); }
+// on the up, and only for a press that began here: a drag that starts on the
+// panel sends its up to the panel's view, never to this one
+- (void)mouseUp:(NSEvent *)e {
+    BOOL close = self.armed && atomic_load(&panelVisible) &&
+        NSPointInRect([self convertPoint:e.locationInWindow fromView:nil], self.bounds);
+    self.armed = NO;
+    if (close) [viewer hide];
 }
 @end
 

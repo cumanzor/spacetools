@@ -1,3 +1,15 @@
+[2026-10-03 21:18:48 UTC] [SpaceView/Feature: hover highlight on pane window previews (spacetools-6bq.5, phase 2 follow-up, operator request)]
+[Attempt #1]
+[Files Changed]
+- spaceview.m (3bb9823): the pane's window cells get hover and press tint through tracking areas (ActiveAlways, MouseMoved). Hover goes through hoverLive, which is off while the panel is hidden and keeps the phase 2 real-motion arm (a resting pointer at open gets no tint until it moves). Hover only tints: no selection, capture or pane render starts from it. mouseUp clears the tint, then keeps the visible and in-bounds checks before focusing. The tint is cleared on hide and on every pane render.
+- spaceview.m (5b64e6c): stronger look at the operator's request, fill 0.22 on hover and 0.32 pressed plus a 2pt controlAccentColor border; layer actions are nulled so it snaps. Cosmetic only.
+[Possible Ripple Effects]
+- Window cells add tracking areas that can receive events while the panel is ordered in at alpha 0 and hidden. Each handler is gated to a no-op, so the cost is event dispatch when the pointer crosses the invisible panel.
+- The pane lists "1 stuck skipped" on every space: a Finder window (layer 0, 761x1137) on all 5 spaces is excluded by the stuck filter. Whether such windows are missing from space previews is separate (SLSHWCaptureSpace) and still unchecked.
+[Testing Notes]
+- Reviewer approved both commits on code (-Wall -Wextra, 0 warnings, p25-01). Operator accepted the hover visually (relayed by the coder).
+- Dev run (coder, relayed raw numbers): idle CPU mean 0.34%, max 5.4% over 118 samples, 0-1.4% while the pointer crossed the hidden panel; the reviewer read the dev log and found no capture started by hover; a click on a pane window focused in 43ms.
+
 [2026-10-03 19:06:00 UTC] [SpaceView/Feature: phase 2, window pane with Mission Control style layout and click to focus (epic spacetools-6bq.2, GH #2)]
 [Attempt #1]
 [Files Changed]

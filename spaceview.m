@@ -968,12 +968,13 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 
 // the in-flight capture counts against the cap: reserve its worst case before
 // starting it. Evicts whole spaces, least recently selected first; never sid
-// itself or a space that is current
+// itself, the selected space, or a space that is current
 - (BOOL)makeRoomForSid:(uint64_t)sid {
     size_t need = (size_t)kWindowImgW * (size_t)kWindowImgH * 4;
     if (self.winBytes + need <= kWindowCacheCap) return YES;
     NSMutableSet *keep = [NSMutableSet setWithObject:@(sid)];
     [keep addObjectsFromArray:self.lastCurrent.allValues];
+    if ([self selectedSid]) [keep addObject:@([self selectedSid])];   // what the pane is showing
     NSArray *order = [self.winCache.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
         uint64_t x = self.winCache[a].lastSelected, y = self.winCache[b].lastSelected;
         return x < y ? NSOrderedAscending : x > y ? NSOrderedDescending : NSOrderedSame; }];

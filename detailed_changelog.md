@@ -12,7 +12,8 @@
 [Testing Notes]
 - Reviewer approved each commit on code (builds clean with -Wall -Wextra; fuzz with the reviewer's seeds, mutants fail the targeted assertions; eviction harness at a 3MB cap). Reproduced by the reviewer: focus by window id with a duplicate-title iTerm window on another space (frontmost and AXFocusedWindow equal the clicked wid), open prep 0.6-1.5ms, committed 4.1-8.3ms warm, 38-43ms first after launch.
 - Relayed from the coder: IOSurface regions flat over repeated selection passes, footprint 53MB with 3 spaces cached and 68MB with every space cached (budget 60-120MB), idle 0.0%.
-- Not exercised live: a click focusing another app's window while a different app is frontmost (operator hand test pending, the README marks it "not checked live yet"), and a hung app.
+- Operator hand test 2026-10-03 19:10Z, dev build: a click on another app's window on another space switched in 59.3ms and focused it in 48ms through the AX frontmost path (log: raise 0, frontmost 0 via AX, front now 1, space kept), no NSRunningApplication fallback. Relayed from the dev log, not reproduced by the reviewer. The README "not checked live yet" note is removed in the coder's next docs edit.
+- Not exercised live: a hung app.
 
 [2026-10-03 19:06:00 UTC] [SpaceView/Fix: panel lost all-spaces membership after a display change (ed090e4, 74f7d64, 7e85de9, docs 1b942c8, a47d849, 63c82fe)]
 [Attempt #1]
@@ -24,7 +25,7 @@
 - Hidden panel costs: dev SpaceView 0.09% CPU, WindowServer near 48% in both builds (high on this machine, not investigated).
 [Testing Notes]
 - Status is mitigated, not proven fixed. Reviewer approved on code. Cause is unproven: stick-pinned app windows are ordered in and still collapse, so ordered-in alone may not explain it, and the clear and re-set may be what matters. The reassert before/after log from a real display change decides which.
-- Pending: a real display change with the dev build running (F7c) and a cross-app hand test.
+- Pending: a real display change with the dev build running (F7c).
 
 [2026-10-02 21:33:56 UTC] [SpaceView/Feature: click a sidebar cell to switch (66c26e6), README 599ae0b eb3ecdc c87b59f cbfaad1]
 [Attempt #1]

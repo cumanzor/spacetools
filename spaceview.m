@@ -553,6 +553,7 @@ static void focusWindow(pid_t pid, uint32_t wid, uint64_t sid) {
 // one window in the right pane; the image is a sublayer so the label strip stays hit-testable
 @interface WinCellView : NSView
 @property CALayer *image;
+@property CALayer *hover;   // tint over the image only; the image itself is never altered
 @property NSTextField *label;
 @property uint32_t wid;
 @property pid_t pid;
@@ -805,6 +806,10 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
         v.image.masksToBounds = YES;
         v.image.backgroundColor = [NSColor colorWithWhite:0 alpha:0.35].CGColor;
         [v.layer addSublayer:v.image];
+        v.hover = [CALayer layer];
+        v.hover.cornerRadius = 5;
+        v.hover.actions = @{ @"backgroundColor": [NSNull null] };   // snap, like the sidebar
+        [v.layer addSublayer:v.hover];
         v.label = [NSTextField labelWithString:@""];
         v.label.font = [NSFont systemFontOfSize:11];
         v.label.textColor = NSColor.labelColor;
@@ -828,6 +833,8 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
         v.sid = sid;
         // the view is unflipped: the image sits above the label strip
         v.image.frame = CGRectMake(0, kLayoutLabelH, r.size.width, r.size.height);
+        v.hover.frame = v.image.frame;
+        v.hover.backgroundColor = nil;   // no hover or press survives a rerender or reopen
         v.image.contents = ws.images[w[@"wid"]];   // nil draws the placeholder fill
         NSString *t = [w[@"title"] length] ? [NSString stringWithFormat:@"%@ - %@", w[@"app"], w[@"title"]] : w[@"app"];
         v.label.stringValue = t;
@@ -1133,6 +1140,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 
 - (void)hide {
     if (atomic_load(&panelVisible)) LOG("hide");
+    for (WinCellView *v in self.winCells) v.hover.backgroundColor = nil;
     if (keyTap) CGEventTapEnable(keyTap, false);
     atomic_store(&panelVisible, false);
     self.panel.alphaValue = 0;
@@ -1187,13 +1195,20 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     [self switchToOrd:[self.shown[self.selected][@"ord"] intValue]];
 }
 
-- (void)hoverIndexOf:(CellView *)v {
-    if (!atomic_load(&panelVisible)) return;   // the panel stays ordered in while hidden
+// visible, and the pointer has really moved since the open: ordering in sends
+// mouseEntered to whatever cell sits under a resting pointer
+- (BOOL)hoverLive {
+    if (!atomic_load(&panelVisible)) return NO;   // the panel stays ordered in while hidden
     if (!self.hoverArmed) {
         NSPoint p = [NSEvent mouseLocation];
-        if (fabs(p.x - self.showMouse.x) < 1 && fabs(p.y - self.showMouse.y) < 1) return;
+        if (fabs(p.x - self.showMouse.x) < 1 && fabs(p.y - self.showMouse.y) < 1) return NO;
         self.hoverArmed = YES;
     }
+    return YES;
+}
+
+- (void)hoverIndexOf:(CellView *)v {
+    if (![self hoverLive]) return;
     for (NSUInteger i = 0; i < self.cells.count; i++)
         if (self.cells[i].view == v && (NSInteger)i != self.selected) { [self selectIndex:i]; return; }
 }
@@ -1208,10 +1223,22 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 - (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
 // the label would otherwise take the hit over its strip
 - (NSView *)hitTest:(NSPoint)p { return !self.hidden && NSPointInRect(p, self.frame) ? self : nil; }
-- (void)mouseDown:(NSEvent *)e { self.layer.backgroundColor = [NSColor colorWithWhite:1 alpha:0.18].CGColor; }
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea *a in self.trackingAreas) [self removeTrackingArea:a];
+    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        owner:self userInfo:nil]];
+}
+- (void)tint:(CGFloat)a { self.hover.backgroundColor = a > 0 ? [NSColor colorWithWhite:1 alpha:a].CGColor : nil; }
+- (void)mouseEntered:(NSEvent *)e { if ([viewer hoverLive]) [self tint:0.12]; }
+// a resting pointer at open only lights the cell once it moves
+- (void)mouseMoved:(NSEvent *)e { if (!self.hover.backgroundColor && [viewer hoverLive]) [self tint:0.12]; }
+- (void)mouseExited:(NSEvent *)e { [self tint:0]; }
+- (void)mouseDown:(NSEvent *)e { if (atomic_load(&panelVisible)) [self tint:0.22]; }
 // on the up, inside, like the sidebar cells
 - (void)mouseUp:(NSEvent *)e {
-    self.layer.backgroundColor = nil;
+    [self tint:0];
     if (!atomic_load(&panelVisible)) return;
     if (!NSPointInRect([self convertPoint:e.locationInWindow fromView:nil], self.bounds)) return;
     [viewer focusWindowCell:self];

@@ -593,6 +593,7 @@ static void focusWindow(pid_t pid, uint32_t wid, uint64_t sid) {
 @property NSMutableDictionary<NSNumber *, WinSpace *> *winCache;   // sid -> windows
 @property size_t winBytes;
 @property BOOL screensMoved;
+@property NSVisualEffectView *backdrop;          // blur off while hidden: the panel stays ordered in
 @property FlippedView *pane;                       // right side: the selected space's windows
 @property NSMutableArray<WinCellView *> *winCells; // reused across renders
 @property NSTextField *paneNote;                   // "no windows" / "capturing"
@@ -661,6 +662,7 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
     bg.layer.masksToBounds = YES;
     bg.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     p.contentView = bg;
+    _backdrop = bg;
 
     NSScrollView *sv = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     sv.hasVerticalScroller = YES;
@@ -1056,6 +1058,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     // kept ordered in at alpha 0, came through intact
     self.panel.alphaValue = 0;
     self.panel.ignoresMouseEvents = YES;
+    self.backdrop.state = NSVisualEffectStateInactive;
     [self.panel orderFrontRegardless];
     [self.panel displayIfNeeded];
 }
@@ -1108,6 +1111,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     atomic_store(&panelVisible, true);
     __block uint64_t tOrder = 0;
     if (g) [self ensureOnSpace:[g[@"current"] unsignedLongLongValue]];
+    self.backdrop.state = NSVisualEffectStateActive;
     self.panel.ignoresMouseEvents = NO;
     self.panel.alphaValue = 1;
     [CATransaction begin];
@@ -1133,6 +1137,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     atomic_store(&panelVisible, false);
     self.panel.alphaValue = 0;
     self.panel.ignoresMouseEvents = YES;
+    self.backdrop.state = NSVisualEffectStateInactive;
 }
 
 - (void)switchToOrd:(int)ord {
@@ -1207,6 +1212,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 // on the up, inside, like the sidebar cells
 - (void)mouseUp:(NSEvent *)e {
     self.layer.backgroundColor = nil;
+    if (!atomic_load(&panelVisible)) return;
     if (!NSPointInRect([self convertPoint:e.locationInWindow fromView:nil], self.bounds)) return;
     [viewer focusWindowCell:self];
 }
@@ -1231,6 +1237,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 // window is under the pointer once the panel is gone
 - (void)mouseDown:(NSEvent *)e { self.layer.backgroundColor = [NSColor colorWithWhite:1 alpha:0.22].CGColor; }
 - (void)mouseUp:(NSEvent *)e {
+    if (!atomic_load(&panelVisible)) return;   // never assume ignoresMouseEvents covers tracking
     [viewer refreshCellContents];   // back to the selection tint
     if (!NSPointInRect([self convertPoint:e.locationInWindow fromView:nil], self.bounds)) return;
     if (fired) return;

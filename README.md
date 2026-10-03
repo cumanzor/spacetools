@@ -180,7 +180,7 @@ switches there through the same path as a digit. Once CGS confirms the switch,
 it finds that exact window through Accessibility by window id (never by title,
 since terminals and browsers repeat titles), raises it and makes its app
 frontmost. If the app does not come forward that way, it activates just that
-app (the switch from one app to another is not checked live yet). A window on the space you are on gets focused without a switch. Each
+app. A window on the space you are on gets focused without a switch. Each
 Accessibility call times out after 0.5s, and an app that does not answer the
 window lookup is skipped after one timeout. If the window closed after it was
 captured, you still land on its space.
@@ -249,17 +249,18 @@ Gotchas learned the hard way:
   `orderFrontRegardless`) does not dismiss MC on macOS 27; it shows above it.
 - Mission Control detection: Dock gains onscreen windows at layer 18 while MC
   is up. Polled at 300ms.
-- An all-spaces window that is ordered out can lose its all-spaces membership
-  in a display change: afterwards `CGSCopySpacesForWindows` lists only one old
-  space, so ordering it in shows it somewhere you are not, while the window
-  still reads as all-spaces. SpaceBadge's strip, ordered in at alpha 0, came
-  through the same change intact, but stuck app windows are ordered in too and
-  do collapse (see `stick` above), so being ordered in may not be what saved
-  it. SpaceView covers both: it keeps its panel ordered in, hidden with alpha 0
-  and `ignoresMouseEvents`, and on every open and after a display change it
-  clears and re-sets the all-spaces bit when the current space is missing,
-  logging the membership before and after. Which of the two carries it through
-  a real display change is not verified yet.
+- An all-spaces window can lose its all-spaces membership: afterwards
+  `CGSCopySpacesForWindows` lists only one old space, so ordering it in shows
+  it somewhere you are not, while the window still reads as all-spaces. It was
+  seen on SpaceView's ordered-out panel after a night of display changes, and
+  the `stick` note above describes the same for stuck windows. SpaceBadge's
+  strip, ordered in at alpha 0, came through that night intact. SpaceView now
+  keeps its panel ordered in, hidden with alpha 0 and `ignoresMouseEvents`, and
+  clears and re-sets the all-spaces bit after a display change and on an open
+  where the current space is missing, logging the membership before and after
+  (`reassert spaces`). A later monitor plug and unplug did not reproduce it,
+  not even on a build without either change, so the trigger is not known and
+  neither change is proven to prevent it.
 - Do not switch spaces with `SLSBridgedManagedDisplaySetCurrentSpaceOperation`.
   It moves the window server and nothing else. The Dock keeps its own
   current-space index and no op in the bridge tells it otherwise (all 100

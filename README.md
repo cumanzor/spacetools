@@ -249,6 +249,14 @@ Gotchas learned the hard way:
   `orderFrontRegardless`) does not dismiss MC on macOS 27; it shows above it.
 - Mission Control detection: Dock gains onscreen windows at layer 18 while MC
   is up. Polled at 300ms.
+- An all-spaces window that is ordered out can lose its all-spaces membership
+  in a display change: afterwards `CGSCopySpacesForWindows` lists only one old
+  space, so ordering it in shows it somewhere you are not, while the window
+  still reads as all-spaces. SpaceBadge's strip, ordered in at alpha 0, came
+  through the same change intact. SpaceView now keeps its panel ordered in and
+  hides it with alpha 0 and `ignoresMouseEvents`, and re-checks the membership
+  on every open. That this holds through a real display change is not
+  verified yet.
 - Do not switch spaces with `SLSBridgedManagedDisplaySetCurrentSpaceOperation`.
   It moves the window server and nothing else. The Dock keeps its own
   current-space index and no op in the bridge tells it otherwise (all 100

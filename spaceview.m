@@ -1069,9 +1069,9 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
 }
 
 // a display change rebuilds the space set and can leave the panel on one old
-// space while it still reads as all-spaces (as the README display-change note on stuck windows describes); it then
-// "opens" somewhere you are not. Toggle the bit so the server rebuilds the
-// membership, and add it to the space by hand if that was not enough
+// space while it still reads as all-spaces (the README stick display-change
+// note); it then "opens" somewhere you are not. Toggle the bit so the server
+// rebuilds the membership, and add it to the space by hand if that was not enough
 - (void)reassertSpaces:(NSString *)why {
     NSArray *before = [self panelSpaces];
     self.panel.collectionBehavior = kPanelBehavior & ~NSWindowCollectionBehaviorCanJoinAllSpaces;

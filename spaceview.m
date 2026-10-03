@@ -16,6 +16,7 @@ typedef CFArrayRef (*CaptureSpaceFn)(int, uint64_t, uint32_t);
 typedef CFArrayRef (*CopyWindowsFn)(int, uint32_t, CFArrayRef, uint32_t, uint64_t *, uint64_t *);
 typedef CFArrayRef (*CaptureWindowsFn)(int, uint32_t *, int, uint32_t);
 typedef CFArrayRef (*CopySpacesFn)(int, int, CFArrayRef);
+typedef void (*AddToSpacesFn)(int, CFArrayRef, CFArrayRef);
 
 static int cid;
 static MDSFn mdsF;
@@ -23,6 +24,7 @@ static CaptureSpaceFn captureF;
 static CopyWindowsFn copyWindowsF;
 static CaptureWindowsFn captureWindowsF;
 static CopySpacesFn copySpacesF;
+static AddToSpacesFn addToSpacesF;
 
 static NSString *const kToggle = @"dev.umanzor.spaceview.toggle";
 static const CGFloat kPreviewW = 960, kPreviewH = 540;
@@ -1058,6 +1060,33 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     });
 }
 
+- (NSArray *)panelSpaces {
+    if (!copySpacesF) return nil;
+    return CFBridgingRelease(copySpacesF(cid, 7, (__bridge CFArrayRef)@[@(self.panel.windowNumber)]));
+}
+
+// a display change rebuilds the space set and can leave the panel on one old
+// space while it still reads as all-spaces (the README stick gotcha); it then
+// "opens" somewhere you are not. Toggle the bit so the server rebuilds the
+// membership, and add it to the space by hand if that was not enough
+- (void)reassertSpaces:(NSString *)why {
+    NSArray *before = [self panelSpaces];
+    self.panel.collectionBehavior = kPanelBehavior & ~NSWindowCollectionBehaviorCanJoinAllSpaces;
+    self.panel.collectionBehavior = kPanelBehavior;
+    LOG("reassert spaces (%{public}@): [%{public}@] -> [%{public}@]", why,
+        [before componentsJoinedByString:@","], [[self panelSpaces] componentsJoinedByString:@","]);
+}
+
+- (void)ensureOnSpace:(uint64_t)sid {
+    NSArray *on = [self panelSpaces];
+    if (!sid || !on.count || [on containsObject:@(sid)]) return;   // never ordered in yet, or fine
+    [self reassertSpaces:@"open, current space missing"];
+    if ([[self panelSpaces] containsObject:@(sid)] || !addToSpacesF) return;
+    // our own window, so the legacy call still works on it
+    addToSpacesF(cid, (__bridge CFArrayRef)@[@(self.panel.windowNumber)], (__bridge CFArrayRef)@[@(sid)]);
+    LOG("added panel to space %llu by hand: [%{public}@]", sid, [[self panelSpaces] componentsJoinedByString:@","]);
+}
+
 - (void)show:(uint64_t)sentNs received:(uint64_t)t0 {
     NSDictionary *g = [self prepareForScreen:screenUnderMouse()];
     // the current space, even with the pointer resting on another cell: order-in
@@ -1075,6 +1104,7 @@ static const CGFloat kSidebarW = 300, kPad = 14, kLabelH = 20;
     fired = NO;
     atomic_store(&panelVisible, true);
     __block uint64_t tOrder = 0;
+    if (g) [self ensureOnSpace:[g[@"current"] unsignedLongLongValue]];
     [CATransaction begin];
     [CATransaction setCompletionBlock:^{
         LOG("open: ipc %.1fms, prep %.1fms, order %.1fms, committed %.1fms", sentNs ? (t0 - sentNs) / 1e6 : -1.0,
@@ -1496,6 +1526,7 @@ int main(int argc, char **argv) {
     copyWindowsF = (CopyWindowsFn)dlsym(h, "SLSCopyWindowsWithOptionsAndTags");
     captureWindowsF = (CaptureWindowsFn)dlsym(h, "SLSHWCaptureWindowList");
     copySpacesF = (CopySpacesFn)dlsym(h, "CGSCopySpacesForWindows");
+    addToSpacesF = (AddToSpacesFn)dlsym(h, "CGSAddWindowsToSpaces");
 
     NSString *mode = argc > 1 ? [NSString stringWithUTF8String:argv[1]] : @"";
     if ([mode isEqualToString:@"--bench"]) return cmdBench(argc > 2 ? MAX(1, atoi(argv[2])) : 1);
@@ -1542,7 +1573,12 @@ int main(int argc, char **argv) {
         object:nil queue:nil usingBlock:^(NSNotification *n) { [viewer spaceChanged]; }];
     [[NSNotificationCenter defaultCenter]
         addObserverForName:NSApplicationDidChangeScreenParametersNotification
-        object:nil queue:nil usingBlock:^(NSNotification *n) { viewer.screensMoved = YES; }];
+        object:nil queue:nil usingBlock:^(NSNotification *n) {
+            viewer.screensMoved = YES;
+            // a dock or undock fires this repeatedly while the space set settles
+            [NSObject cancelPreviousPerformRequestsWithTarget:viewer selector:@selector(reassertSpaces:) object:@"display change"];
+            [viewer performSelector:@selector(reassertSpaces:) withObject:@"display change" afterDelay:1.5];
+        }];
     NSTimer *idle = [NSTimer scheduledTimerWithTimeInterval:120 repeats:YES block:^(NSTimer *t) {
         if (!viewer.panel.visible) [viewer captureCurrent];
     }];

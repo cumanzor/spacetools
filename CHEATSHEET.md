@@ -9,6 +9,7 @@
 | `sw next` / `sw prev` | step one space right / left, stops at the ends (BTT hyper+E / hyper+Q) |
 | `bring messages` | pull Messages' windows to this space and focus them |
 | `send comms` | push the frontmost window to comms, stay where you are |
+| `send next` / `send prev` | push it one space right / left, stops at the ends (BTT meh+E / meh+Q); add `--follow` to go with it |
 | `stick` | pin the frontmost window to every space |
 | `stick slack` | pin the frontmost window of a named app instead |
 | `unstick` | release the focused window back to its own space |
@@ -34,6 +35,7 @@ sw next / sw prev      # one space right / left, no wrap (left/right work too)
 SPACETOOL_ANIMATE=1 sw 3   # the old Dock slide instead of the instant cut
 bring spark            # move app windows here + focus (fuzzy app match)
 send comms             # push the focused window to another space, stay put
+send next / send prev  # one space right / left, no wrap; --follow switches too
 stick                  # pin the focused window to all spaces
 stick slack            # or pin the focused window of a named app
 unstick                # release the focused window back to its own space
@@ -110,7 +112,7 @@ the names file and the Accessibility entry.
 |---|---|
 | names | ~/.config/spacenames.json (keyed by space UUID, survives reboots) |
 | layout snapshot | ~/.config/spacelayout.json (written by `spacename layout save`) |
-| CLIs | ~/.local/bin/{spacename,sw,bring} (shims into SpaceTool.app) |
+| CLIs | ~/.local/bin/{spacename,sw,bring,send,stick,unstick} (shims into SpaceTool.app) |
 | apps | ~/Applications/{SpaceTool,SpaceBadge}.app |
 | Raycast scripts | ~/Documents/scripts/Raycast/{sw,bring,send,stick,unstick,name-space,list-spaces,create-space,remove-space,save-layout,restore-layout}.sh |
 | LaunchAgent | ~/Library/LaunchAgents/dev.umanzor.spacebadge.plist |

@@ -1,3 +1,21 @@
+[2026-10-14 03:58:41 UTC] [spacetool/Feature: send next/prev with --follow, to replace BTT's Move Window One Space Left/Right on meh+Q / meh+E (operator request)]
+[Attempt #1]
+[Files Changed]
+- spacetool.m: stepFor() takes the next/right/prev/left detection out of matchSpace. cmdSend: a step query that resolves to the space you are on (the ends, no wrap) prints "send: no space to the right/left of X" and exits 1 instead of "already on" 0; a frontmost window on more than one space (stuck) is refused before any move; `--follow` runs cmdSwitch on the same query after the 0.35s settle, then raiseWindow() finds the AX window by id (_AXUIElementGetWindow), raises it, sets it main and the app frontmost, and falls back to activateWithOptions:0 if the app is still not active after 200ms. main strips --follow out of the send args. Usage string lists next|prev and --follow.
+- Makefile: `export SDKROOT ?= $(shell xcrun --sdk macosx --show-sdk-path)`. The CommandLineTools MacOSX.sdk symlink moved to MacOSX27.0.sdk on 2026-10-08; the selected Xcode-26.6.0 clang used that symlink as its sysroot and its ld-1267 rejects the 27.0 stubs (tapi error: unknown architecture arm64e.x1-macos). Every target in the repo was unbuildable with bare make until this.
+- README.md, CHEATSHEET.md: send next/prev, --follow, the stuck refusal, the exit code at the ends; the shim list now names send, stick and unstick, which the install target has written since October 2.
+[Possible Ripple Effects]
+- `send next` at the end now exits 1 where it exited 0 with "already on"; nothing moved in either case.
+- A stuck frontmost window is no longer handed to the bridge by send; what the move op did to the all-spaces tag was never checked, so this closes an unknown rather than changing a known behavior.
+- The follow switch takes the sw lock and the payload's instant path, same as sw next.
+- Installed SpaceTool.app only, through a one-off make target that calls BUNDLE for SpaceTool (install would also have re-copied the running SpaceBadge binary). loadsa was not rebuilt; the sudoers pin sha256 is unchanged.
+[Testing Notes]
+- Live on unified (ord 3 of 3): `send next` -> "send: no space to the right of unified", rc 1, nothing moved. `stick list` -> no sticky windows, so the refusal path is untested.
+- Calculator as the throwaway window: `send prev` -> "sent Calculator to personal"; `bring calculator` -> "moved 1 window here", so it had left. `send prev --follow` -> sent, "switched to personal", spacename current = personal, frontmost process Calculator. The first follow build without raiseWindow landed with iTerm2 frontmost: the Dock reactivates the space's last app on arrival, hence the raise. Restored with sw unified, Calculator quit.
+- Installed shim `~/.local/bin/send next` gives the same end message; codesign --deep --strict passes.
+- Not exercised: the stuck refusal, more than one display, a follow whose switch falls back to the animated path.
+- BTT state read from the data store copy: meh+Q/E are the built-in Move Window One Space Left/Right (actions 151/152, preset 504); hyper+Q/E run `"$HOME/Applications/SpaceTool.app/Contents/MacOS/SpaceTool" switch prev|next` through action 206. The operator's first rebinding used action 49 (Launch Application / Open File), which hands the string to LaunchServices as a path, so nothing ran. Fixed through BTT's AppleScript interface with update_trigger on both existing triggers: action 206, config /bin/sh:::-c:::-:::, script `send prev|next --follow` (changing the action type reset the script field, so the script took a second update). Verified with execute_assigned_actions_for_trigger and a Calculator window: send next on the last space refused, send prev moved it, send prev --follow landed on comms with Calculator frontmost. Pre-change trigger JSON kept in the session scratchpad.
+
 [2026-10-03 21:18:48 UTC] [SpaceView/Feature: hover highlight on pane window previews (spacetools-6bq.5, phase 2 follow-up, operator request)]
 [Attempt #1]
 [Files Changed]

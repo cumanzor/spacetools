@@ -56,11 +56,16 @@ static NSDictionary *currentSpaceInfo(void) {
     for (NSDictionary *s in spaceInfos()) if ([s[@"current"] boolValue]) return s;
     return nil;
 }
+// +1 for next/right, -1 for prev/left, 0 for anything else
+static int stepFor(NSString *q) {
+    q = q.lowercaseString;
+    return [@[@"next", @"right"] containsObject:q] ? 1 : [@[@"prev", @"left"] containsObject:q] ? -1 : 0;
+}
 static NSDictionary *matchSpace(NSString *query) {
     NSArray *all = spaceInfos();
     NSString *q = query.lowercaseString;
     // neighbors on the current display, no wrap: the last space's next is itself
-    int step = [@[@"next", @"right"] containsObject:q] ? 1 : [@[@"prev", @"left"] containsObject:q] ? -1 : 0;
+    int step = stepFor(q);
     if (step) {
         NSDictionary *cur = currentSpaceInfo();
         for (NSDictionary *s in all)
@@ -799,12 +804,44 @@ static int cmdBring(NSString *query) {
     return 0;
 }
 
+extern AXError _AXUIElementGetWindow(AXUIElementRef, CGWindowID *);
+
+// after a follow: the Dock reactivates the space's last app on arrival, so the
+// sent window has to be raised by hand. By window id, never by title
+static void raiseWindow(pid_t pid, uint32_t wid) {
+    AXUIElementRef app = AXUIElementCreateApplication(pid);
+    if (!app) return;
+    AXUIElementSetMessagingTimeout(app, 0.5);
+    CFArrayRef raw = NULL;
+    id win = nil;
+    if (AXUIElementCopyAttributeValue(app, kAXWindowsAttribute, (CFTypeRef *)&raw) == kAXErrorSuccess && raw)
+        for (id w in (__bridge_transfer NSArray *)raw) {
+            CGWindowID got = 0;
+            if (_AXUIElementGetWindow((__bridge AXUIElementRef)w, &got) == kAXErrorSuccess && got == wid) { win = w; break; }
+        }
+    if (win) {
+        AXUIElementPerformAction((__bridge AXUIElementRef)win, kAXRaiseAction);
+        AXUIElementSetAttributeValue((__bridge AXUIElementRef)win, kAXMainAttribute, kCFBooleanTrue);
+    }
+    AXUIElementSetAttributeValue(app, kAXFrontmostAttribute, kCFBooleanTrue);
+    CFRelease(app);
+    NSRunningApplication *a = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+    for (int i = 0; i < 20 && !a.active; i++) usleep(10000);
+    if (!a.active) [a activateWithOptions:0];
+}
+
 // onscreen windows come back front to back, so the first real one is what the
 // user is looking at, and onscreen already scopes us to the current space
-static int cmdSend(NSString *query) {
+static int cmdSend(NSString *query, BOOL follow) {
     NSDictionary *dest = matchSpace(query);
     if (!dest) { fprintf(stderr, "send: no space matching \"%s\"\n", query.UTF8String); return 1; }
     if ([dest[@"current"] boolValue]) {
+        // next/prev at the ends resolve to the space you are on: nothing to send to
+        int step = stepFor(query);
+        if (step) {
+            fprintf(stderr, "send: no space to the %s of %s\n", step > 0 ? "right" : "left", label(dest).UTF8String);
+            return 1;
+        }
         printf("already on %s\n", label(dest).UTF8String); return 0;
     }
     NSArray *list = CFBridgingRelease(CGWindowListCopyWindowInfo(
@@ -813,11 +850,19 @@ static int cmdSend(NSString *query) {
         if ([w[(id)kCGWindowLayer] intValue] != 0) continue;
         CGRect b; CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)w[(id)kCGWindowBounds], &b);
         if (b.size.width < 120 || b.size.height < 120) continue;
-        moveWindowsToSpace(@[w[(id)kCGWindowNumber]], [dest[@"sid"] unsignedLongLongValue]);
+        NSNumber *wid = w[(id)kCGWindowNumber];
+        const char *owner = [w[(id)kCGWindowOwnerName] description].UTF8String;
+        // pinned to every space: it is not on this one in particular, and what
+        // the bridge does to the on-all-spaces tag is unchecked
+        NSArray *on = CFBridgingRelease(copySpacesF(cid, 7, (__bridge CFArrayRef)@[wid]));
+        if (on.count > 1) { fprintf(stderr, "send: %s's window is on every space, unstick it first\n", owner); return 1; }
+        moveWindowsToSpace(@[wid], [dest[@"sid"] unsignedLongLongValue]);
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.35]];
-        printf("sent %s to %s\n", [w[(id)kCGWindowOwnerName] description].UTF8String,
-               label(dest).UTF8String);
-        return 0;
+        printf("sent %s to %s\n", owner, label(dest).UTF8String);
+        if (!follow) return 0;
+        int rc = cmdSwitch(query);
+        if (rc == 0) raiseWindow([w[(id)kCGWindowOwnerPID] intValue], wid.unsignedIntValue);
+        return rc;
     }
     fprintf(stderr, "send: no window to send\n");
     return 1;
@@ -1068,7 +1113,11 @@ int main(int argc, char **argv) {
     if ([mode isEqualToString:@"set"])     return cmdSet(arg);
     if ([mode isEqualToString:@"switch"])  return arg.length ? cmdSwitch(arg) : cmdList();
     if ([mode isEqualToString:@"bring"])   return arg.length ? cmdBring(arg) : 2;
-    if ([mode isEqualToString:@"send"])    return arg.length ? cmdSend(arg) : 2;
+    if ([mode isEqualToString:@"send"]) {
+        BOOL follow = [rest containsObject:@"--follow"];
+        if (follow) { [rest removeObject:@"--follow"]; arg = [rest componentsJoinedByString:@" "]; }
+        return arg.length ? cmdSend(arg, follow) : 2;
+    }
     if ([mode isEqualToString:@"stick"]) {
         if ([arg isEqualToString:@"list"]) return cmdStickList();
         return cmdStick(arg, YES);
@@ -1092,7 +1141,7 @@ int main(int argc, char **argv) {
         return 2;
     }
     fprintf(stderr, "usage: spacetool current|list|set <name>|switch <query|next|prev>"
-                    "|bring <app>|send <space>|stick [app]|unstick [app]"
+                    "|bring <app>|send <space|next|prev> [--follow]|stick [app]|unstick [app]"
                     "|stick list|create [name]|rm <space>"
                     "|layout save|restore|view\n");
     return 2;

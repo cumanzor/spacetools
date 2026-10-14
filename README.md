@@ -14,6 +14,7 @@ sw comm              # switch to space by name prefix or number
 sw next              # one space right (prev = left), no wrap; BTT hyper+E / hyper+Q
 bring messages       # move an app's windows to this space and focus it
 send comms           # push the focused window to another space, stay put
+send next            # one space right (prev = left), no wrap; --follow goes with it
 stick                # focused window appears on every space (not the whole app)
 unstick              # ... and back
 stick list           # windows currently on all spaces
@@ -85,6 +86,12 @@ that stopped showing everywhere; a fully automatic re-apply is future work.
 (they come back front to back, and "onscreen" already means the current space)
 and taking the first one at layer 0 bigger than 120x120. So it acts on whatever
 you are actually looking at, which is not always the app you were thinking of.
+`send next` / `send prev` (`right` / `left` work too) push it to the neighbor
+space on the current display, no wrap: at the end nothing moves and it exits
+1, so a hotkey can fire it blindly. `--follow` switches there after the move
+and raises the window by id, because the Dock otherwise reactivates the
+space's last app on arrival. A window pinned to every space is refused; unstick
+it first.
 
 ## SpaceBadge daemon
 

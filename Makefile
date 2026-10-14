@@ -1,4 +1,7 @@
 CFLAGS = -fobjc-arc -O2 -Wno-deprecated-declarations
+# bare clang picks the CommandLineTools SDK symlink, which can point at an SDK
+# newer than the selected Xcode's linker understands (tapi: unknown architecture)
+export SDKROOT ?= $(shell xcrun --sdk macosx --show-sdk-path)
 APPS = $(HOME)/Applications
 BIN = $(HOME)/.local/bin
 LABEL = dev.umanzor.spacebadge

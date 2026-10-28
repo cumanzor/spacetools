@@ -96,7 +96,7 @@ it first.
 ## SpaceBadge daemon
 
 `~/Applications/SpaceBadge.app`, kept alive by the LaunchAgent
-`dev.umanzor.spacebadge`. Shows a translucent name badge in the top-right of
+`dev.umanzor.spacebadge`. Shows a translucent badge (space number and name) in the top-right of
 each named space, plus a name strip under the Mission Control spaces bar.
 
 It also takes `1`-`9` while Mission Control is open and switches to that space.

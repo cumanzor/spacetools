@@ -314,7 +314,8 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
         [live addObject:uuid];
         NSWindow *w = self.badges[uuid];
         NSRect vis = screenForDisplay(s[@"display"]).visibleFrame;
-        NSAttributedString *t = badgeText(name, 54);
+        NSString *label = [NSString stringWithFormat:@"%d %@", [s[@"ord"] intValue], name];
+        NSAttributedString *t = badgeText(label, 54);
         NSSize sz = t.size;
         NSRect frame = NSMakeRect(MAX(NSMinX(vis) + 8, NSMaxX(vis) - sz.width - 36),
                                   NSMaxY(vis) - sz.height - 18, sz.width + 8, sz.height + 4);
@@ -333,7 +334,7 @@ static void bridgedMoveWindow(uint32_t wid, uint64_t sid) {
             self.badges[uuid] = w;
         } else {
             NSTextField *l = w.contentView.subviews.firstObject;
-            if (![l.attributedStringValue.string isEqualToString:name]) l.attributedStringValue = t;
+            if (![l.attributedStringValue.string isEqualToString:label]) l.attributedStringValue = t;
             [self place:w at:frame server:server];
             [self ensureSpace:w sid:[s[@"sid"] unsignedLongLongValue]];
         }

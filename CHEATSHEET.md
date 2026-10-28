@@ -65,7 +65,8 @@ no window in front of you.
 
 ## Badges
 
-- Named spaces show a translucent badge top-right. Unnamed spaces show nothing.
+- Named spaces show a translucent badge top-right with number and name (`4 multi-scan`).
+  Unnamed spaces show nothing.
 - Mission Control shows the strip under the thumbnails: `1 ·  2 xcode  3 dev ...`
   (`·` = unnamed, order matches thumbnails left to right).
 - Rename or clear a name and the badge updates within ~2s.

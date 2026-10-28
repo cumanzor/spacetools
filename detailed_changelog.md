@@ -1,3 +1,15 @@
+[2026-10-28 22:18:19 UTC] [SpaceBadge/Feature: space number on the desktop badge (operator request)]
+[Attempt #1]
+[Files Changed]
+- spacebadge.m (sync): badge text is "<ord> <name>", ord from spaceList (1-based per display, fullscreen spaces still count). The label-changed check compares against the composed text, so a reorder or rename both refresh it.
+- README.md, CHEATSHEET.md: badge description mentions the number.
+[Possible Ripple Effects]
+- After reordering spaces in Mission Control the number updates on the next sync (space switch, map change, or the 15s timer), not instantly.
+- Badges are a few glyphs wider; position is still right-aligned off visibleFrame.
+- Unnamed spaces still show no badge.
+[Testing Notes]
+- make install-agent, then a screencapture of the menu bar display: badge read "4 multi-scan" on space 4.
+
 [2026-10-14 03:58:41 UTC] [spacetool/Feature: send next/prev with --follow, to replace BTT's Move Window One Space Left/Right on meh+Q / meh+E (operator request)]
 [Attempt #1]
 [Files Changed]

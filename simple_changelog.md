@@ -1,3 +1,4 @@
+[2026-10-28 22:18:19 UTC] [SpaceBadge/Feature] Desktop badge shows the space number before the name ("4 multi-scan"), same numbering as the Mission Control strip.
 [2026-10-14 03:58:41 UTC] [spacetool/Feature] send next / send prev push the frontmost window one space over, no wrap (exit 1 at the ends), --follow switches along and raises it; stuck windows refused. Makefile exports SDKROOT: the CLT MacOSX.sdk symlink moved to 27.0 and bare clang stopped linking.
 [2026-10-03 21:18:48 UTC] [SpaceView/Feature] Window previews in the right pane highlight on hover and press, like the sidebar cells: a light fill plus a 2pt accent border (3bb9823, 5b64e6c). Hover starts no captures, and a click on a tinted preview still focuses it.
 

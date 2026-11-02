@@ -1,3 +1,16 @@
+[2026-11-02 16:59:06 UTC] [Docs/Fix: create/rm docs said Mission Control, code uses the payload first]
+[Attempt #1]
+[Files Changed]
+- CHEATSHEET.md: create/rm paragraph describes the payload path, the fallback and SPACETOOL_MC; layout restore gets its own paragraph.
+- README.md: create/rm section, the SLSSpaceCreate pitfall, the Accessibility setup note and the Raycast note.
+- docs/space-creation-without-mission-control.md: dated status note above the verdict. The verdict and research text are unchanged, since they still hold with SIP fully on.
+[Possible Ripple Effects]
+- None in code. The Raycast scripts and spacetool.m were not touched.
+[Testing Notes]
+- Behavior read from spacetool.m (cmdCreate, cmdRemove, cmdLayoutRestore).
+- 2026-11-02 live run on the installed build: 3 create/rm cycles, 59-78 ms for create and 63-65 ms for rm, nothing on stderr so no fallback fired. Removed spaces left no names file entries.
+- Not exercised: the Mission Control fallback (SPACETOOL_MC=1), layout restore.
+
 [2026-10-28 22:18:19 UTC] [SpaceBadge/Feature: space number on the desktop badge (operator request)]
 [Attempt #1]
 [Files Changed]

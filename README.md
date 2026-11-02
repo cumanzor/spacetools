@@ -25,15 +25,23 @@ spacename layout save     # snapshot desktop count and names
 spacename layout restore  # recreate missing desktops, reapply names
 ```
 
-`create` and `rm` drive Mission Control's own UI through Accessibility: the
-add button (`mc.spaces.add`) is a plain AXButton and every space thumbnail
-carries an `AXRemoveDesktop` action, so the Dock performs the change itself
-and stays coherent. Both open Mission Control for about a second and dismiss
-it after. `rm` resolves its argument like `sw` does, refuses fullscreen app
+`create` and `rm` go through the SA payload first: it calls the Dock's own
+add_space/remove_space routines (payload v6+), with no Mission Control flash
+and no Accessibility grant. Measured 2026-11-02 on 3 spaces, each command
+returned in 59-78 ms. The call map is in
+docs/dock-add-remove-space-disassembly.md.
+
+If the payload is missing or can't resolve those routines, they print the
+reason and fall back to Mission Control's UI through Accessibility: the add
+button (`mc.spaces.add`) is a plain AXButton and every space thumbnail carries
+an `AXRemoveDesktop` action, so the Dock still performs the change. That path
+opens Mission Control briefly and dismisses it after. `SPACETOOL_MC=1` forces
+it. `rm` resolves its argument like `sw` does, refuses fullscreen app
 spaces and the last desktop, and drops the removed space's entry from the
 names file.
 
-`layout restore` recreates desktops until the saved count is reached and
+`layout restore` has no payload path. It always needs Accessibility, and it
+opens Mission Control when it has desktops to create. It recreates desktops until the saved count is reached and
 reapplies names by position. It never removes anything: extra desktops are
 reported and left alone. The snapshot lives in `~/.config/spacelayout.json`.
 Save one after settling on a layout; it is the one-command fix for macOS
@@ -298,7 +306,8 @@ Gotchas learned the hard way:
 - `CGSSpaceSetName` exists but writes the space UUID field. Do not use it.
 - `SLSSpaceCreate` / `SLSSpaceDestroy` have the same flaw as the bridged
   switch: the window server obeys and the Dock never hears about it. Create
-  and remove through Mission Control's accessibility tree instead. The Dock
+  and remove from inside the Dock (the payload), or through Mission Control's
+  accessibility tree, which is the fallback and what `layout restore` uses. The Dock
   exposes `mc` > `mc.display` (one per screen, matched to a display by AX
   origin against `CGDisplayBounds`) > `mc.spaces` > `mc.spaces.list` plus
   `mc.spaces.add`, and each thumbnail in the list carries an `AXRemoveDesktop`
@@ -339,9 +348,9 @@ If it ever prints `the Dock ignored the gesture`, grant Accessibility to the
 calling app, or to `~/Applications/SpaceTool.app` if you are running the binary
 directly.
 
-`create`, `rm` and `layout restore` read the Dock's accessibility tree, which
-is gated the same way with the same attribution rules. They print a grant
-message and exit 1 when it is missing.
+`layout restore`, and `create` and `rm` when they fall back from the payload,
+read the Dock's accessibility tree, which is gated the same way with the same
+attribution rules. They print a grant message and exit 1 when it is missing.
 
 **LaunchAgent.** `make install-agent` writes the plist (`RunAtLoad` +
 `KeepAlive`) and reloads the daemon with bootout then bootstrap. Never use
@@ -352,9 +361,9 @@ message and exit 1 when it is missing.
 (`sw.sh`, `bring.sh`, `send.sh`, `name-space.sh`, `list-spaces.sh`,
 `create-space.sh`, `remove-space.sh`, `save-layout.sh`, `restore-layout.sh`).
 They are not version controlled with this repo. The directory has to be added
-once under Raycast's Script Commands settings. The create/remove/restore ones
-need Raycast to hold the Accessibility grant, since TCC attributes their AX
-calls to Raycast.
+once under Raycast's Script Commands settings. The restore one, and create/remove
+when they fall back from the payload, need Raycast to hold the Accessibility
+grant, since TCC attributes their AX calls to Raycast.
 
 Binaries must live inside an .app bundle; the WindowManagement XPC service
 rejects bare executables. `~/.local/bin/{spacename,sw,bring}` are shims into

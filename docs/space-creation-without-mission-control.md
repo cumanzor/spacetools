@@ -7,6 +7,14 @@ doc is the full verification of that wall: what was retested live, what was
 read out of the disassembly, and a reference section for the
 WindowServer/WindowManager internals mapped along the way.
 
+**Status, 2026-11-02:** this verdict still holds with SIP fully on, but it no
+longer describes what `spacetool create` normally does. Since payload v6
+(9be5009), `create` and `rm` call the Dock's own add_space/remove_space from
+inside the Dock, with no Mission Control UI. That needs the scripting addition
+and its SIP prerequisite (window-on-all-spaces.md), and is mapped in
+dock-add-remove-space-disassembly.md. The Mission Control round trip below is
+now the fallback, and still the only path for `layout restore`.
+
 ## Verdict
 
 With SIP enabled there is no way for a third-party process to create a

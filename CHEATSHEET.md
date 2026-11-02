@@ -47,10 +47,15 @@ spacename layout save     # snapshot desktop count + names
 spacename layout restore  # recreate missing desktops, reapply names
 ```
 
-`create` and `rm` open Mission Control for about a second (the Dock does the
-actual work, via its accessibility tree) and need the same Accessibility
-grant story as `sw`. `rm` refuses the last desktop and fullscreen spaces.
-`layout restore` only ever creates and names; extras are left alone.
+`create` and `rm` run inside the Dock through the SA payload, so there is no
+Mission Control flash and no Accessibility grant. If the payload can't do it they
+print why and fall back to opening Mission Control for about a second, which
+does need Accessibility (`SPACETOOL_MC=1` forces that path). `rm` refuses the
+last desktop and fullscreen spaces.
+
+`layout restore` has no payload path: it always needs Accessibility and opens
+Mission Control when it has desktops to create. It only ever creates and names;
+extras are left alone.
 
 `bring` pulls a named app's windows to you. `send` pushes the window in front of
 you away. `send` acts on whatever is frontmost, so check what that is before
